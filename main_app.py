@@ -507,7 +507,7 @@ class App:
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
-        self.pdf_print_settings = tk.StringVar(value='paper=A4,pagespersheet=2')  # cài đặt in cho PDF (SumatraPDF)
+        self.pdf_print_settings = tk.StringVar(value='paper=A4,pagespersheet=2,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
