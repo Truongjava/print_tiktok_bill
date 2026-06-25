@@ -44,14 +44,13 @@ else:
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
 ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship'
-BATCH_SIZE = 50  # fallback, sẽ bị ghi đè bởi page_size từ UI
+BATCH_SIZE = 50
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ============================================================
 # AUTOMATION
 # ============================================================
-def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
-                   page_size=50):
+def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None):
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
@@ -59,12 +58,8 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
     total_printed = 0
     target = max_orders if max_orders > 0 else 10**9
     batch_num = 0
-    batch_size = page_size  # số đơn mỗi lần in = số đơn hiển thị mỗi trang
     if stop_event is None:
         stop_event = threading.Event()  # fallback
-
-    # Build URL với page_size
-    orders_url = f'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship&page_size={page_size}'
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
@@ -91,12 +86,12 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 if stop_event.is_set():
                     log_cb('⏹ Đã dừng theo yêu cầu.', 'warn'); break
                 batch_num += 1
-                batch_target = min(batch_size, target - total_printed)
+                batch_target = min(BATCH_SIZE, target - total_printed)
                 log_cb(f'▸ Batch {batch_num}: chọn {batch_target} đơn (đã in {total_printed}/{target})', 'batch')
 
                 # Vào trang đơn hàng
                 state_cb('navigating', f'Batch {batch_num}: Đang tải danh sách đơn...')
-                page.goto(orders_url, wait_until='networkidle', timeout=60000)
+                page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
                 page.wait_for_timeout(4000)
 
                 # Đếm & chọn
@@ -351,7 +346,6 @@ class App:
             if getattr(sys, 'frozen', False):
                 self.retail_path.set(f'[{p.name} — đã tích hợp sẵn]')
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
-        self.page_size = tk.IntVar(value=50)  # số đơn hiển thị mỗi trang (tối đa 50)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -435,12 +429,7 @@ class App:
         r = tk.Frame(parent, bg='#f0f2f5'); r.pack(fill='x')
         tk.Label(r, text='Số đơn in:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280').pack(side='left')
         tk.Spinbox(r, from_=0, to=9999, width=6, textvariable=self.max_orders, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
-        tk.Label(r, text='(0 = tất cả)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
-        # Số đơn mỗi trang
-        r2 = tk.Frame(parent, bg='#f0f2f5'); r2.pack(fill='x', pady=(4,0))
-        tk.Label(r2, text='Đơn/trang:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280').pack(side='left')
-        tk.Spinbox(r2, from_=20, to=50, increment=10, width=6, textvariable=self.page_size, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
-        tk.Label(r2, text='(20-50, mặc định 50)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        tk.Label(r, text='(0 = tất cả, >50 = tự chia batch)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
         tk.Label(parent, text='📑 Luôn in cả 3 loại: Danh sách lấy hàng (A4) + Đóng gói (A6) + Vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
 
@@ -620,8 +609,7 @@ class App:
             pdf_paths = run_automation(cookie, doc, out_dir, n,
                 lambda m, t='': self.root.after(0, self.log, m, t),
                 lambda s, m: self.root.after(0, self._set_state, s, m),
-                self.stop_event,
-                page_size=self.page_size.get())
+                self.stop_event)
 
             for p in pdf_paths:
                 if Path(p).exists(): self._add_result(f'📄 {Path(p).name}')
