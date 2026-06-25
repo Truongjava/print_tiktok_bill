@@ -507,7 +507,7 @@ class App:
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
-        self.pdf_print_settings = tk.StringVar(value='paper=Letter,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
+        self.pdf_print_settings = tk.StringVar(value='paper=A4,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -955,7 +955,7 @@ class App:
             capture_output=True, timeout=30)
 
     def _merge_pdf_2up(self, pdf_path):
-        """Gộp 2 trang PDF thành 1 trang Letter Portrait (2 label xếp dọc, scale 130%).
+        """Gộp 2 trang PDF thành 1 trang A4 Portrait (2 label xếp dọc, fit to printable area).
         Trả về đường dẫn file PDF đã merge, hoặc None nếu thất bại."""
         import os as _os
         try:
@@ -966,13 +966,12 @@ class App:
             reader = PdfReader(pdf_path)
             pages = reader.pages
             if len(pages) < 2:
-                return None  # chỉ 1 trang, không cần merge
+                return None
 
-            # Letter Portrait: 612 x 792 pts, 2 trang xếp dọc
-            canvas_w, canvas_h = 612, 792
-            margin = 40
-            gap = 40
-            scale_factor = 1.30  # 130%
+            # A4 Portrait: 595 x 842 pts, 2 labels xếp dọc
+            canvas_w, canvas_h = 595, 842
+            margin = 36
+            gap = 36
 
             canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
             avail_h = canvas_h - 2*margin - gap
@@ -981,7 +980,7 @@ class App:
             for i, page in enumerate(pages[:2]):
                 pw = float(page.mediabox.width)
                 ph = float(page.mediabox.height)
-                scale = min((canvas_w - 2*margin) / pw, half_h / ph) * scale_factor
+                scale = min((canvas_w - 2*margin) / pw, half_h / ph)
                 sw, sh = pw * scale, ph * scale
                 tx = (canvas_w - sw) / 2
                 ty = margin + i * (half_h + gap) + (half_h - sh) / 2
