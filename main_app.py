@@ -507,6 +507,7 @@ class App:
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
+        self.pdf_print_settings = tk.StringVar(value='paper=A4')  # cài đặt in cho PDF (SumatraPDF)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -603,9 +604,13 @@ class App:
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
         # In tự động
         r3 = tk.Frame(parent, bg='#f0f2f5'); r3.pack(fill='x', pady=(4,0))
-        tk.Checkbutton(r3, text='🖨️ In tự động PDF ra máy in', variable=self.auto_print,
+        tk.Checkbutton(r3, text='🖨️ In tự động ra máy in', variable=self.auto_print,
                        bg='#f0f2f5', font=('Segoe UI',9), activebackground='#f0f2f5').pack(side='left')
-        tk.Entry(r3, textvariable=self.printer_name, font=('Segoe UI',8), width=40).pack(side='left', padx=(6,0))
+        tk.Entry(r3, textvariable=self.printer_name, font=('Segoe UI',8), width=30).pack(side='left', padx=(6,0))
+        r4 = tk.Frame(parent, bg='#f0f2f5'); r4.pack(fill='x')
+        tk.Label(r4, text='   Cài đặt in PDF:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
+        tk.Entry(r4, textvariable=self.pdf_print_settings, font=('Segoe UI',8), width=35).pack(side='left', padx=(4,0))
+        tk.Label(r4, text='(vd: paper=A4,pagespersheet=2)', font=('Segoe UI',7), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=4)
 
     def _build_schedule(self, parent):
         modes = [('Chạy 1 lần','once'), ('Lặp mỗi N giờ','interval'), ('Giờ cố định trong ngày','daily')]
@@ -822,9 +827,14 @@ class App:
                     if excel_path and Path(excel_path).exists():
                         files_to_print.append(excel_path)
                 # In từng file
+                pdf_settings = self.pdf_print_settings.get().strip()
                 for fp in files_to_print:
                     try:
-                        self._print_file(fp, printer)
+                        is_pdf = fp.lower().endswith('.pdf')
+                        # PDF: dùng SumatraPDF với cài đặt tùy chỉnh
+                        # Excel: dùng PowerShell với máy in mặc định
+                        self._print_file(fp, printer,
+                                       pdf_settings=pdf_settings if is_pdf else '')
                         self.log(f'  ✓ Đã gửi in: {Path(fp).name}', 'ok')
                     except Exception as e:
                         self.log(f'  ✗ Lỗi in {Path(fp).name}: {e}', 'err')
@@ -873,13 +883,14 @@ class App:
         d = self.output_dir.get()
         if Path(d).exists(): os.startfile(d)
 
-    def _print_file(self, file_path, printer_name):
-        """In file (PDF hoặc Excel) ra máy in chỉ định (Windows)."""
+    def _print_file(self, file_path, printer_name, pdf_settings='paper=A4'):
+        """In file (PDF hoặc Excel) ra máy in chỉ định (Windows).
+        pdf_settings: chuỗi cài đặt cho SumatraPDF (vd: 'paper=A4,pagespersheet=2')"""
         import subprocess
         fp = str(file_path)
         is_pdf = fp.lower().endswith('.pdf')
 
-        # Cách 1: SumatraPDF — in PDF thẳng đến máy in chỉ định (silent, nhanh)
+        # Cách 1: SumatraPDF — in PDF thẳng đến máy in chỉ định (silent)
         if is_pdf:
             sumatra_paths = [
                 r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
@@ -888,8 +899,10 @@ class App:
             ]
             for sp in sumatra_paths:
                 if Path(sp).exists():
-                    subprocess.run([sp, '-print-to', printer_name, fp],
-                                 check=False, timeout=60)
+                    cmd = [sp, '-print-to', printer_name, fp]
+                    if pdf_settings:
+                        cmd += ['-print-settings', pdf_settings]
+                    subprocess.run(cmd, check=False, timeout=60)
                     return
             # Không tìm thấy SumatraPDF → cảnh báo 1 lần
             if not getattr(self, '_warned_sumatra', False):
