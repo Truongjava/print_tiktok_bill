@@ -886,52 +886,98 @@ class App:
     def _print_file(self, file_path, printer_name, pdf_settings='paper=A4'):
         """In file (PDF hoặc Excel) ra máy in chỉ định (Windows).
         pdf_settings: chuỗi cài đặt cho SumatraPDF (vd: 'paper=A4,pagespersheet=2')"""
-        import subprocess
+        import subprocess, os as _os
         fp = str(file_path)
-        is_pdf = fp.lower().endswith('.pdf')
 
-        # Cách 1: SumatraPDF — in PDF thẳng đến máy in chỉ định (silent)
-        if is_pdf:
-            sumatra_paths = [
-                r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
-                r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
-                r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
-            ]
-            for sp in sumatra_paths:
-                if Path(sp).exists():
-                    cmd = [sp, '-print-to', printer_name, fp]
-                    if pdf_settings:
-                        cmd += ['-print-settings', pdf_settings]
-                    subprocess.run(cmd, check=False, timeout=60)
-                    return
-            # Không tìm thấy SumatraPDF → cảnh báo 1 lần
-            if not getattr(self, '_warned_sumatra', False):
-                self.root.after(0, self.log,
-                    '⚠ Chưa cài SumatraPDF — in qua PowerShell (máy in mặc định). '
-                    'Tải tại: https://www.sumatrapdfreader.org', 'warn')
-                self._warned_sumatra = True
+        # ── Tìm SumatraPDF ──
+        sumatra_exe = None
+        sumatra_paths = [
+            r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
+            r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
+            r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
+        ]
+        for sp in sumatra_paths:
+            if Path(sp).exists():
+                sumatra_exe = sp
+                break
 
-        # Cách 2 cho file không phải PDF (Excel...): dùng COM automation
+        def _print_pdf_via_sumatra(pdf_path):
+            """In 1 file PDF qua SumatraPDF."""
+            cmd = [sumatra_exe, '-print-to', printer_name, str(pdf_path)]
+            if pdf_settings:
+                cmd += ['-print-settings', pdf_settings]
+            subprocess.run(cmd, check=False, timeout=60)
+
+        # ── PDF: in thẳng qua SumatraPDF ──
+        if fp.lower().endswith('.pdf'):
+            if sumatra_exe:
+                _print_pdf_via_sumatra(fp)
+                return
+            else:
+                self._warn_sumatra()
+                # Fallback PowerShell
+                subprocess.run(['powershell', '-Command',
+                    f'Start-Process -FilePath "{fp}" -Verb Print'],
+                    capture_output=True, timeout=30)
+                return
+
+        # ── Excel: chuyển sang PDF tạm rồi in qua SumatraPDF ──
         if fp.lower().endswith('.xlsx') or fp.lower().endswith('.xls'):
             try:
-                import pythoncom, win32com.client, os as _os
-                pythoncom.CoInitialize()  # cần cho thread worker
+                import pythoncom, win32com.client
+                pythoncom.CoInitialize()
                 excel = win32com.client.Dispatch("Excel.Application")
                 excel.Visible = False
                 abs_path = _os.path.abspath(fp)
                 workbook = excel.Workbooks.Open(abs_path)
-                workbook.PrintOut(ActivePrinter=printer_name)
+                # Xuất ra PDF tạm
+                temp_pdf = abs_path + '.temp_print.pdf'
+                workbook.ExportAsFixedFormat(0, temp_pdf)  # 0 = xlTypePDF
                 workbook.Close(False)
                 excel.Quit()
                 pythoncom.CoUninitialize()
+                # In PDF tạm qua SumatraPDF (nếu có) hoặc PowerShell
+                if sumatra_exe:
+                    _print_pdf_via_sumatra(temp_pdf)
+                else:
+                    subprocess.run(['powershell', '-Command',
+                        f'Start-Process -FilePath "{temp_pdf}" -Verb Print'],
+                        capture_output=True, timeout=30)
+                # Dọn dẹp file tạm sau 5 giây
+                def _cleanup():
+                    try: _os.remove(temp_pdf)
+                    except: pass
+                threading.Timer(5, _cleanup).start()
                 return
             except Exception:
-                pass  # fallback xuống PowerShell bên dưới
+                try: pythoncom.CoUninitialize()
+                except: pass
+                # Fallback: in thẳng qua COM PrintOut
+                try:
+                    import pythoncom as _pc2, win32com.client as _wc2
+                    _pc2.CoInitialize()
+                    ex = _wc2.Dispatch("Excel.Application")
+                    ex.Visible = False
+                    wb = ex.Workbooks.Open(_os.path.abspath(fp))
+                    wb.PrintOut(ActivePrinter=printer_name)
+                    wb.Close(False)
+                    ex.Quit()
+                    _pc2.CoUninitialize()
+                    return
+                except Exception:
+                    pass
 
-        # Fallback: PowerShell Start-Process (mở app mặc định để in)
-        ps_cmd = f'Start-Process -FilePath "{fp}" -Verb Print'
-        subprocess.run(['powershell', '-Command', ps_cmd],
-                      capture_output=True, timeout=30)
+        # ── Fallback cuối: PowerShell Start-Process ──
+        subprocess.run(['powershell', '-Command',
+            f'Start-Process -FilePath "{fp}" -Verb Print'],
+            capture_output=True, timeout=30)
+
+    def _warn_sumatra(self):
+        """Cảnh báo 1 lần nếu chưa cài SumatraPDF."""
+        if not getattr(self, '_warned_sumatra', False):
+            self.root.after(0, self.log,
+                '⚠ Chưa cài SumatraPDF — tải tại: https://www.sumatrapdfreader.org', 'warn')
+            self._warned_sumatra = True
 
     def _on_close(self):
         """Dọn dẹp khi tắt app: dừng scheduler, đóng browser, hủy cửa sổ."""
