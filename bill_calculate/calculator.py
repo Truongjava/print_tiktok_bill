@@ -335,16 +335,16 @@ def generate_excel(results: list[dict], output_path: str) -> str:
 
     # ── Total row ──
     tr = len(results) + 2
-    last_data = tr - 1
+    tong_qty = sum(r["qty"] for r in results)
+    tong_sold = sum(r["qty_sold"] for r in results)
+    tong_promo = sum(r["promo_qty"] for r in results)
 
     ws.cell(row=tr, column=1, value="Tổng").font = total_font
     ws.cell(row=tr, column=1).border = thin_border
     ws.cell(row=tr, column=2).border = thin_border  # SKU cell trống
 
-    for ci in [3, 4, 5]:  # Qty, Qty Sold, Promo Qty
-        col_letter = get_column_letter(ci)
-        c = ws.cell(row=tr, column=ci)
-        c.value = f"=SUM({col_letter}2:{col_letter}{last_data})"
+    for ci, val in [(3, tong_qty), (4, tong_sold), (5, tong_promo)]:
+        c = ws.cell(row=tr, column=ci, value=val)
         c.font = total_font
         c.border = thin_border
 
@@ -412,16 +412,16 @@ def generate_grouped_excel(results: list[dict], output_path: str) -> str:
 
     # ── Total row ──
     tr = len(grouped_list) + 2
-    last_data = tr - 1
+    tong_qty = sum(r["qty"] for r in grouped_list)
+    tong_sold = sum(r["qty_sold"] for r in grouped_list)
+    tong_promo = sum(r["promo_qty"] for r in grouped_list)
 
     ws.cell(row=tr, column=1, value="Tổng").font = total_font
     ws.cell(row=tr, column=1).border = thin_border
     ws.cell(row=tr, column=2).border = thin_border  # Đơn vị tính trống
 
-    for ci in [3, 4, 5]:  # Qty, Qty Sold, Promo Qty
-        col_letter = get_column_letter(ci)
-        c = ws.cell(row=tr, column=ci)
-        c.value = f"=SUM({col_letter}2:{col_letter}{last_data})"
+    for ci, val in [(3, tong_qty), (4, tong_sold), (5, tong_promo)]:
+        c = ws.cell(row=tr, column=ci, value=val)
         c.font = total_font
         c.border = thin_border
 
