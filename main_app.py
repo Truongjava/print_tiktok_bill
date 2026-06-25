@@ -505,6 +505,8 @@ class App:
             if getattr(sys, 'frozen', False):
                 self.retail_path.set(f'[{p.name} — đã tích hợp sẵn]')
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
+        self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
+        self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -598,6 +600,11 @@ class App:
         tk.Label(r, text='(0 = tất cả, >50 = tự chia batch)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
         tk.Label(parent, text='📑 Luôn in: Danh sách lấy hàng (A4) + Đơn vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
+        # In tự động
+        r3 = tk.Frame(parent, bg='#f0f2f5'); r3.pack(fill='x', pady=(4,0))
+        tk.Checkbutton(r3, text='🖨️ In tự động PDF ra máy in', variable=self.auto_print,
+                       bg='#f0f2f5', font=('Segoe UI',9), activebackground='#f0f2f5').pack(side='left')
+        tk.Entry(r3, textvariable=self.printer_name, font=('Segoe UI',8), width=40).pack(side='left', padx=(6,0))
 
     def _build_schedule(self, parent):
         modes = [('Chạy 1 lần','once'), ('Lặp mỗi N giờ','interval'), ('Giờ cố định trong ngày','daily')]
@@ -796,6 +803,18 @@ class App:
                         fp = r['files'].get(key)
                         if fp and Path(fp).exists(): self._add_result(f'{lbl} {Path(fp).name}')
 
+            # Step 3: In tự động ra máy in (nếu bật)
+            if self.auto_print.get():
+                printer = self.printer_name.get().strip()
+                self.log(f'🖨️ Đang in PDF ra "{printer}"...', 'info')
+                for pdf_path in pdf_paths:
+                    if Path(pdf_path).exists() and pdf_path.lower().endswith('.pdf'):
+                        try:
+                            self._print_pdf(pdf_path, printer)
+                            self.log(f'  ✓ Đã gửi in: {Path(pdf_path).name}', 'ok')
+                        except Exception as e:
+                            self.log(f'  ✗ Lỗi in {Path(pdf_path).name}: {e}', 'err')
+
             self.log('🏁 HOÀN THÀNH!', 'bold_ok')
             self._set_state('done', f'✅ Hoàn thành lúc {datetime.now().strftime("%H:%M:%S")}')
             # Trả về browser/playwright để worker lưu lại cho lần sau
@@ -837,6 +856,24 @@ class App:
     def _open_output_dir(self):
         d = self.output_dir.get()
         if Path(d).exists(): os.startfile(d)
+
+    def _print_pdf(self, pdf_path, printer_name):
+        """In file PDF ra máy in chỉ định (Windows)."""
+        import subprocess, ctypes
+        # Thử dùng SumatraPDF trước (nhẹ, hỗ trợ command-line in)
+        sumatra_paths = [
+            r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
+            r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
+        ]
+        for sp in sumatra_paths:
+            if Path(sp).exists():
+                subprocess.run([sp, '-print-to', printer_name, pdf_path],
+                             check=False, timeout=60)
+                return
+
+        # Fallback: dùng Windows ShellExecute "print" verb
+        # In ra máy in mặc định — nếu HP là mặc định thì không cần đổi
+        ctypes.windll.shell32.ShellExecuteW(None, "print", str(pdf_path), None, None, 0)
 
     def _on_close(self):
         """Dọn dẹp khi tắt app: dừng scheduler, đóng browser, hủy cửa sổ."""
