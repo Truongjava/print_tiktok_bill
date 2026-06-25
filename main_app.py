@@ -513,6 +513,7 @@ class App:
         self.daily_times = tk.StringVar(value='08:00, 14:00, 20:00')
         self.running = False; self.scheduler_running = False; self.result_files = []
         self.stop_event = threading.Event()  # cờ dừng cho automation loop
+        self._warned_sumatra = False  # tránh log cảnh báo SumatraPDF nhiều lần
 
         # Worker thread chuyên biệt cho Playwright (tránh lỗi thread-safety)
         self._worker = AutomationWorker()
@@ -874,22 +875,33 @@ class App:
 
     def _print_file(self, file_path, printer_name):
         """In file (PDF hoặc Excel) ra máy in chỉ định (Windows)."""
-        import subprocess, ctypes
+        import subprocess
         fp = str(file_path)
         is_pdf = fp.lower().endswith('.pdf')
-        # SumatraPDF chỉ hỗ trợ file PDF
+
+        # Cách 1: SumatraPDF — in PDF thẳng đến máy in chỉ định (silent, nhanh)
         if is_pdf:
             sumatra_paths = [
                 r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
                 r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
+                r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
             ]
             for sp in sumatra_paths:
                 if Path(sp).exists():
                     subprocess.run([sp, '-print-to', printer_name, fp],
                                  check=False, timeout=60)
                     return
-        # Fallback: dùng Windows ShellExecute "print" verb
-        ctypes.windll.shell32.ShellExecuteW(None, "print", fp, None, None, 0)
+            # Không tìm thấy SumatraPDF → cảnh báo 1 lần
+            if not getattr(self, '_warned_sumatra', False):
+                self.root.after(0, self.log,
+                    '⚠ Chưa cài SumatraPDF — in qua PowerShell (máy in mặc định). '
+                    'Tải tại: https://www.sumatrapdfreader.org', 'warn')
+                self._warned_sumatra = True
+
+        # Cách 2: PowerShell Start-Process — hoạt động từ mọi thread
+        ps_cmd = f'Start-Process -FilePath "{fp}" -Verb Print'
+        subprocess.run(['powershell', '-Command', ps_cmd],
+                      capture_output=True, timeout=30)
 
     def _on_close(self):
         """Dọn dẹp khi tắt app: dừng scheduler, đóng browser, hủy cửa sổ."""
