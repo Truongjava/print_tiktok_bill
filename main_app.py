@@ -94,6 +94,23 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
                 page.wait_for_timeout(4000)
 
+                # ── Chọn 50 đơn/trang (mặc định TikTok là 20) ──
+                try:
+                    size_span = page.locator('span.p-select-view-value').filter(has_text='/Page').first
+                    if size_span.count() > 0:
+                        current_size = size_span.inner_text().strip()
+                        if '20' in current_size:
+                            # Click dropdown để mở
+                            page.locator('[class*="p-select"]').filter(has_text='/Page').first.click()
+                            page.wait_for_timeout(800)
+                            # Chọn 50/Page
+                            opt = page.locator('[class*="p-select-option"]').filter(has_text='50/Page').first
+                            if opt.count() > 0:
+                                opt.click()
+                                page.wait_for_timeout(3000)
+                                log_cb('  ✓ Đã chọn 50 đơn/trang', 'ok')
+                except: pass
+
                 # Đếm & chọn
                 total_avail = page.evaluate("() => document.querySelectorAll('td.col-checkbox label.p-checkbox').length")
                 if total_avail == 0:
