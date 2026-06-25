@@ -50,8 +50,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ============================================================
 # AUTOMATION
 # ============================================================
-def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
-                   existing_playwright=None, existing_browser=None):
+def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None):
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
@@ -62,22 +61,8 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
     if stop_event is None:
         stop_event = threading.Event()  # fallback
 
-    # ── Tái sử dụng browser cũ nếu có, nếu không thì tạo mới ──
-    if existing_browser and existing_playwright:
-        playwright = existing_playwright
-        browser = existing_browser
-        # Dùng context hiện có (đã đăng nhập + có cookie sẵn)
-        context = browser.contexts[0] if browser.contexts else browser.new_context(
-            viewport={'width': 1366, 'height': 768},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-            accept_downloads=True)
-        page = context.new_page()  # tạo tab mới, không đụng tab cũ
-        log_cb('♻ Dùng lại browser đang mở — vào thẳng trang đơn hàng...', 'info')
-        page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
-        page.wait_for_timeout(4000)
-    else:
-        playwright = sync_playwright().start()
-        browser = playwright.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
         context = browser.new_context(viewport={'width': 1366, 'height': 768},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
             accept_downloads=True)
@@ -96,155 +81,153 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
         page.goto(TARGET_URL, wait_until='domcontentloaded', timeout=30000)
         page.wait_for_timeout(2000)
 
-    try:
-        while total_printed < target:
-            if stop_event.is_set():
-                log_cb('⏹ Đã dừng theo yêu cầu.', 'warn'); break
-            batch_num += 1
-            batch_target = min(BATCH_SIZE, target - total_printed)
-            log_cb(f'▸ Batch {batch_num}: chọn {batch_target} đơn (đã in {total_printed}/{target})', 'batch')
+        try:
+            while total_printed < target:
+                if stop_event.is_set():
+                    log_cb('⏹ Đã dừng theo yêu cầu.', 'warn'); break
+                batch_num += 1
+                batch_target = min(BATCH_SIZE, target - total_printed)
+                log_cb(f'▸ Batch {batch_num}: chọn {batch_target} đơn (đã in {total_printed}/{target})', 'batch')
 
-            # Vào trang đơn hàng
-            state_cb('navigating', f'Batch {batch_num}: Đang tải danh sách đơn...')
-            page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
-            page.wait_for_timeout(4000)
+                # Vào trang đơn hàng
+                state_cb('navigating', f'Batch {batch_num}: Đang tải danh sách đơn...')
+                page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
+                page.wait_for_timeout(4000)
 
-            # Đếm & chọn
-            total_avail = page.evaluate("() => document.querySelectorAll('td.col-checkbox label.p-checkbox').length")
-            if total_avail == 0:
-                log_cb('  ✓ Hết đơn khả dụng — hoàn thành.', 'ok'); break
-            to_select = min(batch_target, total_avail)
+                # Đếm & chọn
+                total_avail = page.evaluate("() => document.querySelectorAll('td.col-checkbox label.p-checkbox').length")
+                if total_avail == 0:
+                    log_cb('  ✓ Hết đơn khả dụng — hoàn thành.', 'ok'); break
+                to_select = min(batch_target, total_avail)
 
-            cbs = page.query_selector_all('td.col-checkbox label.p-checkbox')
-            checked = 0
-            for cb in cbs[:to_select]:
-                try: cb.click(); checked += 1; page.wait_for_timeout(120)
-                except: pass
-            page.wait_for_timeout(800)
-
-            if total_avail < batch_target:
-                log_cb(f'  ⚠ Chỉ có {total_avail} đơn, chọn hết {checked}', 'warn')
-            else:
-                log_cb(f'  ✓ Đã chọn {checked}/{batch_target} đơn', 'ok')
-            if checked == 0: log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
-
-            # In chứng từ → chọn A4 → In
-            state_cb('printing', f'Batch {batch_num}: Đang in...')
-            page.locator('button:has-text("In chứng từ")').first.wait_for(timeout=10000)
-            page.locator('button:has-text("In chứng từ")').first.click()
-            page.wait_for_timeout(3000)
-
-            page.wait_for_selector('text=Nhãn vận chuyển', timeout=10000)
-            page.wait_for_timeout(1000)
-            # Giữ nguyên A6 vận chuyển (đã checked) + check thêm A4
-            # → 2 loại: A4 + A6 vận chuyển
-            for doc_label in ['Danh sách lấy hàng (A4)']:
-                try:
-                    lbl = page.locator('label').filter(has_text=doc_label).first
-                    if lbl.count() > 0:
-                        inp = lbl.locator('input')
-                        if inp.count() > 0 and not inp.is_checked():
-                            lbl.click(); page.wait_for_timeout(300)
-                except: pass
-            page.wait_for_timeout(2000)
-            log_cb('  ✓ Đã chọn: A4 + A6 vận chuyển', 'ok')
-
-            # Click nút In trong modal
-            in_btn = None
-            for _ in range(20):
-                for b in page.locator('.p-modal button, [class*="modal"] button').all():
-                    if b.inner_text().strip() == 'In' and b.is_enabled(): in_btn = b; break
-                if in_btn: break; page.wait_for_timeout(500)
-            if not in_btn:
-                in_btn = page.locator('.p-modal button:has-text("In")').first
-                in_btn.evaluate('el => { el.disabled = false; el.classList.remove("p-btn-disabled"); }')
-            in_btn.click()
-            log_cb('  ✓ Đã bấm In', 'ok')
-            page.wait_for_timeout(3000)
-
-            # ── Bước 1: Bấm "Tiếp tục in" trong popup đầu tiên ──
-            state_cb('printing', f'Batch {batch_num}: Đợi popup "Tiếp tục in"...')
-            tieptuc_btn = None
-            for _ in range(30):
-                btns = page.locator('button:has-text("Tiếp tục in"), button:has-text("Continue"), button:has-text("Xác nhận")')
-                cnt = btns.count()
-                for j in range(cnt):
-                    b = btns.nth(j)
-                    try:
-                        if b.is_visible(timeout=500):
-                            tieptuc_btn = b; break
+                cbs = page.query_selector_all('td.col-checkbox label.p-checkbox')
+                checked = 0
+                for cb in cbs[:to_select]:
+                    try: cb.click(); checked += 1; page.wait_for_timeout(120)
                     except: pass
-                if tieptuc_btn: break
+                page.wait_for_timeout(800)
+
+                if total_avail < batch_target:
+                    log_cb(f'  ⚠ Chỉ có {total_avail} đơn, chọn hết {checked}', 'warn')
+                else:
+                    log_cb(f'  ✓ Đã chọn {checked}/{batch_target} đơn', 'ok')
+                if checked == 0: log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
+
+                # In chứng từ → chọn A4 → In
+                state_cb('printing', f'Batch {batch_num}: Đang in...')
+                page.locator('button:has-text("In chứng từ")').first.wait_for(timeout=10000)
+                page.locator('button:has-text("In chứng từ")').first.click()
+                page.wait_for_timeout(3000)
+
+                page.wait_for_selector('text=Nhãn vận chuyển', timeout=10000)
                 page.wait_for_timeout(1000)
-            if not tieptuc_btn:
-                log_cb('  ✗ KHÔNG TÌM THẤY nút "Tiếp tục in" — kiểm tra popup!', 'err')
-                try:
-                    ss = str(Path(output_dir) / f'debug_no_tieptucin_batch{batch_num}.png')
-                    page.screenshot(path=ss); log_cb(f'  📸 Screenshot: {ss}', 'info')
-                except: pass
-                total_printed += checked; break
-            tieptuc_btn.click(timeout=5000)
-            log_cb('  ✓ Đã bấm "Tiếp tục in"', 'ok')
-            page.wait_for_timeout(3000)
-
-            # ── Bước 2: Bấm "Tải xuống tất cả tập tin" trong popup thứ hai ──
-            state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
-
-            taixuong_btn = None
-            for _ in range(30):
-                btns = page.locator('button:has-text("Tải xuống tất cả"), button:has-text("Download all"), button:has-text("Tải xuống")')
-                cnt = btns.count()
-                for j in range(cnt):
-                    b = btns.nth(j)
+                # Giữ nguyên A6 vận chuyển (đã checked) + check thêm A4
+                # → 2 loại: A4 + A6 vận chuyển
+                for doc_label in ['Danh sách lấy hàng (A4)']:
                     try:
-                        if b.is_visible(timeout=500):
-                            taixuong_btn = b; break
+                        lbl = page.locator('label').filter(has_text=doc_label).first
+                        if lbl.count() > 0:
+                            inp = lbl.locator('input')
+                            if inp.count() > 0 and not inp.is_checked():
+                                lbl.click(); page.wait_for_timeout(300)
                     except: pass
-                if taixuong_btn: break
-                page.wait_for_timeout(1000)
-
-            if not taixuong_btn:
-                log_cb('  ✗ KHÔNG TÌM THẤY nút "Tải xuống tất cả tập tin" — kiểm tra popup!', 'err')
-                try:
-                    ss = str(Path(output_dir) / f'debug_no_taixuong_batch{batch_num}.png')
-                    page.screenshot(path=ss); log_cb(f'  📸 Screenshot: {ss}', 'info')
-                except: pass
-                total_printed += checked; break
-
-            log_cb('  📥 Đang bấm nút tải xuống...', 'info')
-            # Dùng event listener để bắt TẤT CẢ download (nhiều file 1 lúc)
-            downloaded_files = []
-            def on_download(dl):
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                suggested = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{ts}.pdf'
-                bp = str(Path(output_dir) / suggested)
-                dl.save_as(bp)
-                downloaded_files.append(bp)
-                log_cb(f'  💾 Đã tải: {Path(bp).name}', 'ok')
-            page.on('download', on_download)
-            taixuong_btn.click(timeout=5000)
-            log_cb('  ✓ Đã bấm "Tải xuống tất cả"', 'ok')
-            # Đợi đủ lâu để tất cả download hoàn tất
-            page.wait_for_timeout(8000)
-            page.remove_listener('download', on_download)
-            pdf_files.extend(downloaded_files)
-            log_cb(f'  📥 Tổng cộng {len(downloaded_files)} file đã tải', 'info')
-            if not downloaded_files:
-                log_cb('  ✗ Không bắt được download nào!', 'err')
-                total_printed += checked; break
-
-            total_printed += checked
-            log_cb(f'  📊 Tiến độ: {total_printed}/{target} đơn, {len(pdf_files)} file PDF', 'info')
-
-            if total_printed < target and total_avail > 0:
                 page.wait_for_timeout(2000)
+                log_cb('  ✓ Đã chọn: A4 + A6 vận chuyển', 'ok')
 
-        # KHÔNG đóng browser — giữ lại cho đến khi tắt chương trình
-        return pdf_files, playwright, browser
-    except Exception as e:
-        log_cb(f'  ✗ Lỗi: {e}', 'err')
-        # KHÔNG đóng browser — giữ lại để user xem lỗi
-        return pdf_files, playwright, browser
+                # Click nút In trong modal
+                in_btn = None
+                for _ in range(20):
+                    for b in page.locator('.p-modal button, [class*="modal"] button').all():
+                        if b.inner_text().strip() == 'In' and b.is_enabled(): in_btn = b; break
+                    if in_btn: break; page.wait_for_timeout(500)
+                if not in_btn:
+                    in_btn = page.locator('.p-modal button:has-text("In")').first
+                    in_btn.evaluate('el => { el.disabled = false; el.classList.remove("p-btn-disabled"); }')
+                in_btn.click()
+                log_cb('  ✓ Đã bấm In', 'ok')
+                page.wait_for_timeout(3000)
+
+                # ── Bước 1: Bấm "Tiếp tục in" trong popup đầu tiên ──
+                state_cb('printing', f'Batch {batch_num}: Đợi popup "Tiếp tục in"...')
+                tieptuc_btn = None
+                for _ in range(30):
+                    btns = page.locator('button:has-text("Tiếp tục in"), button:has-text("Continue"), button:has-text("Xác nhận")')
+                    cnt = btns.count()
+                    for j in range(cnt):
+                        b = btns.nth(j)
+                        try:
+                            if b.is_visible(timeout=500):
+                                tieptuc_btn = b; break
+                        except: pass
+                    if tieptuc_btn: break
+                    page.wait_for_timeout(1000)
+                if not tieptuc_btn:
+                    log_cb('  ✗ KHÔNG TÌM THẤY nút "Tiếp tục in" — kiểm tra popup!', 'err')
+                    try:
+                        ss = str(Path(output_dir) / f'debug_no_tieptucin_batch{batch_num}.png')
+                        page.screenshot(path=ss); log_cb(f'  📸 Screenshot: {ss}', 'info')
+                    except: pass
+                    total_printed += checked; break
+                tieptuc_btn.click(timeout=5000)
+                log_cb('  ✓ Đã bấm "Tiếp tục in"', 'ok')
+                page.wait_for_timeout(3000)
+
+                # ── Bước 2: Bấm "Tải xuống tất cả tập tin" trong popup thứ hai ──
+                state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
+
+                taixuong_btn = None
+                for _ in range(30):
+                    btns = page.locator('button:has-text("Tải xuống tất cả"), button:has-text("Download all"), button:has-text("Tải xuống")')
+                    cnt = btns.count()
+                    for j in range(cnt):
+                        b = btns.nth(j)
+                        try:
+                            if b.is_visible(timeout=500):
+                                taixuong_btn = b; break
+                        except: pass
+                    if taixuong_btn: break
+                    page.wait_for_timeout(1000)
+
+                if not taixuong_btn:
+                    log_cb('  ✗ KHÔNG TÌM THẤY nút "Tải xuống tất cả tập tin" — kiểm tra popup!', 'err')
+                    try:
+                        ss = str(Path(output_dir) / f'debug_no_taixuong_batch{batch_num}.png')
+                        page.screenshot(path=ss); log_cb(f'  📸 Screenshot: {ss}', 'info')
+                    except: pass
+                    total_printed += checked; break
+
+                log_cb('  📥 Đang bấm nút tải xuống...', 'info')
+                # Dùng event listener để bắt TẤT CẢ download (nhiều file 1 lúc)
+                downloaded_files = []
+                def on_download(dl):
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    suggested = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{ts}.pdf'
+                    bp = str(Path(output_dir) / suggested)
+                    dl.save_as(bp)
+                    downloaded_files.append(bp)
+                    log_cb(f'  💾 Đã tải: {Path(bp).name}', 'ok')
+                page.on('download', on_download)
+                taixuong_btn.click(timeout=5000)
+                log_cb('  ✓ Đã bấm "Tải xuống tất cả"', 'ok')
+                # Đợi đủ lâu để tất cả download hoàn tất
+                page.wait_for_timeout(8000)
+                page.remove_listener('download', on_download)
+                pdf_files.extend(downloaded_files)
+                log_cb(f'  📥 Tổng cộng {len(downloaded_files)} file đã tải', 'info')
+                if not downloaded_files:
+                    log_cb('  ✗ Không bắt được download nào!', 'err')
+                    total_printed += checked; break
+
+                total_printed += checked
+                log_cb(f'  📊 Tiến độ: {total_printed}/{target} đơn, {len(pdf_files)} file PDF', 'info')
+
+                if total_printed < target and total_avail > 0:
+                    page.wait_for_timeout(2000)
+
+            browser.close()
+            return pdf_files
+        except Exception as e:
+            log_cb(f'  ✗ Lỗi: {e}', 'err'); browser.close(); return pdf_files
 
 # ============================================================
 # CALCULATOR
@@ -369,11 +352,6 @@ class App:
         self.daily_times = tk.StringVar(value='08:00, 14:00, 20:00')
         self.running = False; self.scheduler_running = False; self.result_files = []
         self.stop_event = threading.Event()  # cờ dừng cho automation loop
-        self._playwright = None   # giữ playwright instance
-        self._browser = None      # giữ browser instance — KHÔNG đóng cho đến khi tắt app
-
-        # Bắt sự kiện đóng cửa sổ để dọn dẹp browser
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.scheduler = Scheduler(
             callback=self._execute_job,
@@ -628,17 +606,10 @@ class App:
             # Step 1: Download
             self.stop_event.clear()
             self.log(f'📥 Tải PDF ({n if n>0 else "tất cả"} đơn)...', 'info')
-            result = run_automation(cookie, doc, out_dir, n,
+            pdf_paths = run_automation(cookie, doc, out_dir, n,
                 lambda m, t='': self.root.after(0, self.log, m, t),
                 lambda s, m: self.root.after(0, self._set_state, s, m),
-                self.stop_event,
-                existing_playwright=self._playwright,
-                existing_browser=self._browser)
-            pdf_paths, new_playwright, new_browser = result
-
-            # Lưu lại để lần sau tái sử dụng (KHÔNG đóng browser)
-            self._browser = new_browser
-            self._playwright = new_playwright
+                self.stop_event)
 
             for p in pdf_paths:
                 if Path(p).exists(): self._add_result(f'📄 {Path(p).name}')
@@ -681,20 +652,6 @@ class App:
     def _open_output_dir(self):
         d = self.output_dir.get()
         if Path(d).exists(): os.startfile(d)
-
-    def _on_close(self):
-        """Đóng browser + playwright khi tắt chương trình."""
-        self.scheduler.stop()
-        self.scheduler_running = False
-        self.running = False
-        self.stop_event.set()
-        if self._browser:
-            try: self._browser.close()
-            except: pass
-        if self._playwright:
-            try: self._playwright.stop()
-            except: pass
-        self.root.destroy()
 
 if __name__ == '__main__':
     root = tk.Tk()
