@@ -43,7 +43,7 @@ else:
     RETAIL_DEFAULT = BASE_DIR / 'sản phẩm bán lẻ.xlsx'
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
-ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship'
+ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship&page_size=50'
 BATCH_SIZE = 50
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -114,26 +114,6 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             state_cb('navigating', f'Batch {batch_num}: Đang tải danh sách đơn...')
             page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
             page.wait_for_timeout(4000)
-
-            # ── Chọn 50 đơn/trang (mặc định TikTok là 20) ──
-            try:
-                size_span = page.locator('span.p-select-view-value').filter(has_text='/Page').first
-                if size_span.count() > 0:
-                    current_size = size_span.inner_text().strip()
-                    if '20' in current_size:
-                        # Click dropdown để mở
-                        page.locator('[class*="p-select"]').filter(has_text='/Page').first.click()
-                        page.wait_for_timeout(800)
-                        # Chọn 50/Page
-                        opt = page.locator('[class*="p-select-option"]').filter(has_text='50/Page').first
-                        if opt.count() > 0:
-                            opt.click()
-                            # Đợi bảng load lại với 50 đơn (network idle + selector)
-                            page.wait_for_load_state('networkidle', timeout=30000)
-                            page.wait_for_selector('td.col-checkbox label.p-checkbox', timeout=15000)
-                            page.wait_for_timeout(1000)
-                            log_cb('  ✓ Đã chọn 50 đơn/trang', 'ok')
-            except: pass
 
             # Đếm & chọn
             total_avail = page.evaluate("() => document.querySelectorAll('td.col-checkbox label.p-checkbox').length")
