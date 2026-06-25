@@ -151,6 +151,46 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 log_cb(f'  ✓ Đã chọn {checked}/{batch_target} đơn', 'ok')
             if checked == 0: log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
 
+            # ── Lưu ID các đơn hàng đã chọn vào Excel (phòng trường hợp tải lỗi) ──
+            try:
+                order_ids = page.evaluate('''() => {
+                    const ids = [];
+                    const rows = document.querySelectorAll('tr');
+                    rows.forEach(row => {
+                        const cb = row.querySelector('td.col-checkbox input[type="checkbox"]:checked');
+                        if (cb) {
+                            // Tìm ô chứa Order ID (thường là chuỗi số 15+ ký tự)
+                            const cells = row.querySelectorAll('td');
+                            cells.forEach(cell => {
+                                const text = cell.textContent.trim();
+                                if (/^\\d{15,}$/.test(text)) {
+                                    ids.push(text);
+                                }
+                            });
+                        }
+                    });
+                    return ids;
+                }''')
+                if order_ids:
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font, Alignment, Border, Side
+                    order_file = str(Path(output_dir) / f'ID_don_hang_da_in_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
+                    wb = Workbook(); ws = wb.active; ws.title = "Order IDs"
+                    ws.cell(row=1, column=1, value="STT").font = Font(bold=True)
+                    ws.cell(row=1, column=2, value="Order ID").font = Font(bold=True)
+                    ws.cell(row=1, column=3, value="Batch").font = Font(bold=True)
+                    for i, oid in enumerate(order_ids, 1):
+                        ws.cell(row=i+1, column=1, value=i)
+                        ws.cell(row=i+1, column=2, value=oid)
+                        ws.cell(row=i+1, column=3, value=batch_num)
+                    ws.column_dimensions['A'].width = 8
+                    ws.column_dimensions['B'].width = 22
+                    ws.column_dimensions['C'].width = 10
+                    wb.save(order_file)
+                    log_cb(f'  📋 Đã lưu {len(order_ids)} ID đơn hàng vào {Path(order_file).name}', 'ok')
+            except Exception as e:
+                log_cb(f'  ⚠ Không lưu được ID đơn hàng: {e}', 'warn')
+
             # In chứng từ → chọn A4 → In
             state_cb('printing', f'Batch {batch_num}: Đang in...')
             page.locator('button:has-text("In chứng từ")').first.wait_for(timeout=10000)
@@ -542,7 +582,7 @@ class App:
         tk.Label(r, text='Số đơn in:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280').pack(side='left')
         tk.Spinbox(r, from_=0, to=9999, width=6, textvariable=self.max_orders, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
         tk.Label(r, text='(0 = tất cả, >50 = tự chia batch)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
-        tk.Label(parent, text='📑 Luôn in cả 3 loại: Danh sách lấy hàng (A4) + Đóng gói (A6) + Vận chuyển (A6)',
+        tk.Label(parent, text='📑 Luôn in: Danh sách lấy hàng (A4) + Đơn vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
 
     def _build_schedule(self, parent):
