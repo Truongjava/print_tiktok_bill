@@ -794,6 +794,7 @@ class App:
             self.log(f'📥 Đã tải {len(pdf_paths)} file PDF', 'ok' if pdf_paths else 'warn')
 
             # Step 2: Calculator
+            results = []
             if pdf_paths:
                 self.log('📊 Đang tính bill...', 'info')
                 results = run_calculator(pdf_paths, out_dir, master, retail,
@@ -806,14 +807,28 @@ class App:
             # Step 3: In tự động ra máy in (nếu bật)
             if self.auto_print.get():
                 printer = self.printer_name.get().strip()
-                self.log(f'🖨️ Đang in PDF ra "{printer}"...', 'info')
-                for pdf_path in pdf_paths:
-                    if Path(pdf_path).exists() and pdf_path.lower().endswith('.pdf'):
-                        try:
-                            self._print_pdf(pdf_path, printer)
-                            self.log(f'  ✓ Đã gửi in: {Path(pdf_path).name}', 'ok')
-                        except Exception as e:
-                            self.log(f'  ✗ Lỗi in {Path(pdf_path).name}: {e}', 'err')
+                self.log(f'🖨️ Đang in ra "{printer}"...', 'info')
+                # Thu thập các file cần in từ lần chạy này
+                files_to_print = []
+                # File PDF Shipping Label (từ TikTok)
+                for p in pdf_paths:
+                    name = Path(p).name.lower()
+                    if Path(p).exists() and ('shipping' in name or 'vận chuyển' in name):
+                        files_to_print.append(str(p))
+                # File Excel báo cáo gộp SKU (từ calculator)
+                for r in results:
+                    excel_path = r['files'].get('excel')
+                    if excel_path and Path(excel_path).exists():
+                        files_to_print.append(excel_path)
+                # In từng file
+                for fp in files_to_print:
+                    try:
+                        self._print_file(fp, printer)
+                        self.log(f'  ✓ Đã gửi in: {Path(fp).name}', 'ok')
+                    except Exception as e:
+                        self.log(f'  ✗ Lỗi in {Path(fp).name}: {e}', 'err')
+                if not files_to_print:
+                    self.log('  ⚠ Không có file nào để in', 'warn')
 
             self.log('🏁 HOÀN THÀNH!', 'bold_ok')
             self._set_state('done', f'✅ Hoàn thành lúc {datetime.now().strftime("%H:%M:%S")}')
@@ -857,23 +872,24 @@ class App:
         d = self.output_dir.get()
         if Path(d).exists(): os.startfile(d)
 
-    def _print_pdf(self, pdf_path, printer_name):
-        """In file PDF ra máy in chỉ định (Windows)."""
+    def _print_file(self, file_path, printer_name):
+        """In file (PDF hoặc Excel) ra máy in chỉ định (Windows)."""
         import subprocess, ctypes
-        # Thử dùng SumatraPDF trước (nhẹ, hỗ trợ command-line in)
-        sumatra_paths = [
-            r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
-            r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
-        ]
-        for sp in sumatra_paths:
-            if Path(sp).exists():
-                subprocess.run([sp, '-print-to', printer_name, pdf_path],
-                             check=False, timeout=60)
-                return
-
+        fp = str(file_path)
+        is_pdf = fp.lower().endswith('.pdf')
+        # SumatraPDF chỉ hỗ trợ file PDF
+        if is_pdf:
+            sumatra_paths = [
+                r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
+                r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
+            ]
+            for sp in sumatra_paths:
+                if Path(sp).exists():
+                    subprocess.run([sp, '-print-to', printer_name, fp],
+                                 check=False, timeout=60)
+                    return
         # Fallback: dùng Windows ShellExecute "print" verb
-        # In ra máy in mặc định — nếu HP là mặc định thì không cần đổi
-        ctypes.windll.shell32.ShellExecuteW(None, "print", str(pdf_path), None, None, 0)
+        ctypes.windll.shell32.ShellExecuteW(None, "print", fp, None, None, 0)
 
     def _on_close(self):
         """Dọn dẹp khi tắt app: dừng scheduler, đóng browser, hủy cửa sổ."""
