@@ -24,9 +24,13 @@ BILL_DIR = BASE_DIR / 'bill_calculate'
 UPLOAD_DIR = BILL_DIR / 'uploads'
 
 if getattr(sys, 'frozen', False):
-    # Chạy file .exe — dùng Playwright browser đã cài sẵn trên máy
-    _os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH',
-        _os.path.join(_os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright'))
+    # Chạy file .exe — ưu tiên thư mục portable, fallback về system
+    _portable_browsers = _os.path.join(_os.path.dirname(sys.executable), 'ms-playwright')
+    if _os.path.isdir(_portable_browsers):
+        _os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _portable_browsers
+    else:
+        _os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH',
+            _os.path.join(_os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright'))
     BASE_DIR = Path(sys.executable).parent
     BILL_DIR = BASE_DIR / 'bill_calculate'
     UPLOAD_DIR = BILL_DIR / 'uploads'
@@ -893,6 +897,7 @@ class App:
         if fp.lower().endswith('.pdf'):
             sumatra_exe = None
             sumatra_paths = [
+                _os.path.join(_os.path.dirname(sys.executable), 'SumatraPDF.exe') if getattr(sys, 'frozen', False) else r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
                 r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
                 r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
                 r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
