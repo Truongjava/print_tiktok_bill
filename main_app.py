@@ -955,8 +955,8 @@ class App:
             capture_output=True, timeout=30)
 
     def _merge_pdf_2up(self, pdf_path):
-        """Gộp 2 trang PDF thành 1 trang A4 Landscape (2 label nằm ngang cạnh nhau, scale 70%).
-        Trả về đường dẫn file PDF đã merge, hoặc None nếu thất bại."""
+        """Gộp PDF thành các tờ A4 Landscape (2 label nằm ngang cạnh nhau/trang, scale 70%).
+        Mỗi cặp 2 trang PDF → 1 tờ A4. Trả về đường dẫn file đã merge, hoặc None."""
         import os as _os
         try:
             from pypdf import PdfReader, PdfWriter, PageObject, Transformation
@@ -964,32 +964,37 @@ class App:
             return None
         try:
             reader = PdfReader(pdf_path)
-            pages = reader.pages
-            if len(pages) < 2:
+            if len(reader.pages) < 2:
                 return None
 
-            # A4 Landscape: 842 x 595 pts, 2 labels nằm ngang cạnh nhau
+            # A4 Landscape: 842 x 595 pts
             canvas_w, canvas_h = 842, 595
-            margin = 36
-            gap = 36
-            scale_factor = 0.70  # 70%
-
-            canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
-            avail_w = canvas_w - 2*margin - gap
-            half_w = avail_w / 2
-
-            for i, page in enumerate(pages[:2]):
-                pw = float(page.mediabox.width)
-                ph = float(page.mediabox.height)
-                scale = min(half_w / pw, (canvas_h - 2*margin) / ph) * scale_factor
-                sw, sh = pw * scale, ph * scale
-                tx = margin + i * (half_w + gap) + (half_w - sw) / 2
-                ty = (canvas_h - sh) / 2
-                canvas.merge_transformed_page(page,
-                    Transformation().scale(scale).translate(tx / scale, ty / scale))
+            margin_left = 14   # 5mm
+            margin_top = 28    # 10mm
+            gap = -14          # dồn label phải sát trái
+            scale_factor = 0.70
 
             writer = PdfWriter()
-            writer.add_page(canvas)
+            avail_w = canvas_w - 2*margin_left - gap
+            half_w = avail_w / 2
+
+            # Xử lý từng cặp 2 trang
+            for pair_start in range(0, len(reader.pages), 2):
+                pair = reader.pages[pair_start:pair_start+2]
+                if len(pair) < 2:
+                    break  # bỏ trang lẻ cuối
+                canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
+                for i, page in enumerate(pair):
+                    pw = float(page.mediabox.width)
+                    ph = float(page.mediabox.height)
+                    scale = min(half_w / pw, (canvas_h - 2*margin_top) / ph) * scale_factor
+                    sw, sh = pw * scale, ph * scale
+                    tx = margin_left + i * (half_w + gap)
+                    ty = canvas_h - margin_top - sh
+                    canvas.merge_transformed_page(page,
+                        Transformation().scale(scale).translate(tx / scale, ty / scale))
+                writer.add_page(canvas)
+
             temp_path = pdf_path + '.2up.pdf'
             with open(temp_path, 'wb') as f:
                 writer.write(f)
