@@ -981,8 +981,7 @@ class App:
             # Xử lý từng cặp 2 trang
             for pair_start in range(0, len(reader.pages), 2):
                 pair = reader.pages[pair_start:pair_start+2]
-                if len(pair) < 2:
-                    break  # bỏ trang lẻ cuối
+                is_last_odd = len(pair) == 1  # label lẻ cuối cùng
                 canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
                 for i, page in enumerate(pair):
                     pw = float(page.mediabox.width)
