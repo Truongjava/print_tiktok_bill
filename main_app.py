@@ -955,7 +955,7 @@ class App:
             capture_output=True, timeout=30)
 
     def _merge_pdf_2up(self, pdf_path):
-        """Gộp 2 trang PDF thành 1 trang A4 Portrait (2 label xếp dọc, fit to printable area).
+        """Gộp 2 trang PDF thành 1 trang A4 Landscape (2 label nằm ngang cạnh nhau, scale 70%).
         Trả về đường dẫn file PDF đã merge, hoặc None nếu thất bại."""
         import os as _os
         try:
@@ -968,22 +968,23 @@ class App:
             if len(pages) < 2:
                 return None
 
-            # A4 Portrait: 595 x 842 pts, 2 labels xếp dọc
-            canvas_w, canvas_h = 595, 842
+            # A4 Landscape: 842 x 595 pts, 2 labels nằm ngang cạnh nhau
+            canvas_w, canvas_h = 842, 595
             margin = 36
             gap = 36
+            scale_factor = 0.70  # 70%
 
             canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
-            avail_h = canvas_h - 2*margin - gap
-            half_h = avail_h / 2
+            avail_w = canvas_w - 2*margin - gap
+            half_w = avail_w / 2
 
             for i, page in enumerate(pages[:2]):
                 pw = float(page.mediabox.width)
                 ph = float(page.mediabox.height)
-                scale = min((canvas_w - 2*margin) / pw, half_h / ph)
+                scale = min(half_w / pw, (canvas_h - 2*margin) / ph) * scale_factor
                 sw, sh = pw * scale, ph * scale
-                tx = (canvas_w - sw) / 2
-                ty = margin + i * (half_h + gap) + (half_h - sh) / 2
+                tx = margin + i * (half_w + gap) + (half_w - sw) / 2
+                ty = (canvas_h - sh) / 2
                 canvas.merge_transformed_page(page,
                     Transformation().scale(scale).translate(tx / scale, ty / scale))
 
