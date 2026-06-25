@@ -71,8 +71,14 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             viewport={'width': 1366, 'height': 768},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
             accept_downloads=True)
-        page = context.new_page()  # tab mới, không đụng tab cũ
-        log_cb('♻ Dùng lại browser — vào thẳng trang đơn hàng...', 'info')
+        # Tìm page có sẵn để F5 thay vì mở tab mới
+        existing_pages = [p for p in context.pages if not p.is_closed()]
+        if existing_pages:
+            page = existing_pages[-1]  # dùng page cuối cùng (đang ở TikTok)
+            log_cb('♻ Dùng lại browser — F5 trang đơn hàng...', 'info')
+        else:
+            page = context.new_page()
+            log_cb('♻ Dùng lại browser — mở tab mới...', 'info')
         page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
         page.wait_for_timeout(4000)
     else:
