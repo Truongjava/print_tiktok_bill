@@ -50,7 +50,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ============================================================
 # AUTOMATION
 # ============================================================
-def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None):
+def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
+                   existing_playwright=None, existing_browser=None):
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
@@ -61,25 +62,39 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
     if stop_event is None:
         stop_event = threading.Event()  # fallback
 
-    playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
-    context = browser.new_context(viewport={'width': 1366, 'height': 768},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-        accept_downloads=True)
-    pw_cookies = []
-    for c in cookies_list:
-        if not c.get('name') or not c.get('value'): continue
-        pw = {'name': c['name'], 'value': c['value'], 'domain': c.get('domain', '.tiktok.com'), 'path': c.get('path', '/')}
-        if c.get('expirationDate') and not c.get('session'): pw['expires'] = int(c['expirationDate'])
-        if 'httpOnly' in c: pw['httpOnly'] = c['httpOnly']
-        if 'secure' in c: pw['secure'] = c['secure']
-        if c.get('sameSite'):
-            pw['sameSite'] = {'strict':'Strict','lax':'Lax','no_restriction':'None','unspecified':'Lax'}.get(c['sameSite'],'Lax')
-        pw_cookies.append(pw)
-    context.add_cookies(pw_cookies)
-    page = context.new_page()
-    page.goto(TARGET_URL, wait_until='domcontentloaded', timeout=30000)
-    page.wait_for_timeout(2000)
+    # ── Tái sử dụng browser cũ nếu có, nếu không thì tạo mới ──
+    if existing_browser and existing_playwright:
+        playwright = existing_playwright
+        browser = existing_browser
+        # Dùng context hiện có (đã đăng nhập + có cookie sẵn)
+        context = browser.contexts[0] if browser.contexts else browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+            accept_downloads=True)
+        page = context.new_page()  # tạo tab mới, không đụng tab cũ
+        log_cb('♻ Dùng lại browser đang mở — vào thẳng trang đơn hàng...', 'info')
+        page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
+        page.wait_for_timeout(4000)
+    else:
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
+        context = browser.new_context(viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+            accept_downloads=True)
+        pw_cookies = []
+        for c in cookies_list:
+            if not c.get('name') or not c.get('value'): continue
+            pw = {'name': c['name'], 'value': c['value'], 'domain': c.get('domain', '.tiktok.com'), 'path': c.get('path', '/')}
+            if c.get('expirationDate') and not c.get('session'): pw['expires'] = int(c['expirationDate'])
+            if 'httpOnly' in c: pw['httpOnly'] = c['httpOnly']
+            if 'secure' in c: pw['secure'] = c['secure']
+            if c.get('sameSite'):
+                pw['sameSite'] = {'strict':'Strict','lax':'Lax','no_restriction':'None','unspecified':'Lax'}.get(c['sameSite'],'Lax')
+            pw_cookies.append(pw)
+        context.add_cookies(pw_cookies)
+        page = context.new_page()
+        page.goto(TARGET_URL, wait_until='domcontentloaded', timeout=30000)
+        page.wait_for_timeout(2000)
 
     try:
         while total_printed < target:
@@ -616,16 +631,12 @@ class App:
             result = run_automation(cookie, doc, out_dir, n,
                 lambda m, t='': self.root.after(0, self.log, m, t),
                 lambda s, m: self.root.after(0, self._set_state, s, m),
-                self.stop_event)
+                self.stop_event,
+                existing_playwright=self._playwright,
+                existing_browser=self._browser)
             pdf_paths, new_playwright, new_browser = result
 
-            # Đóng browser cũ nếu có, giữ browser mới
-            if self._browser and self._browser != new_browser:
-                try: self._browser.close()
-                except: pass
-            if self._playwright and self._playwright != new_playwright:
-                try: self._playwright.stop()
-                except: pass
+            # Lưu lại để lần sau tái sử dụng (KHÔNG đóng browser)
             self._browser = new_browser
             self._playwright = new_playwright
 
