@@ -911,7 +911,24 @@ class App:
                     'Tải tại: https://www.sumatrapdfreader.org', 'warn')
                 self._warned_sumatra = True
 
-        # Cách 2: PowerShell Start-Process — hoạt động từ mọi thread
+        # Cách 2 cho file không phải PDF (Excel...): dùng COM automation
+        if fp.lower().endswith('.xlsx') or fp.lower().endswith('.xls'):
+            try:
+                import pythoncom, win32com.client, os as _os
+                pythoncom.CoInitialize()  # cần cho thread worker
+                excel = win32com.client.Dispatch("Excel.Application")
+                excel.Visible = False
+                abs_path = _os.path.abspath(fp)
+                workbook = excel.Workbooks.Open(abs_path)
+                workbook.PrintOut(ActivePrinter=printer_name)
+                workbook.Close(False)
+                excel.Quit()
+                pythoncom.CoUninitialize()
+                return
+            except Exception:
+                pass  # fallback xuống PowerShell bên dưới
+
+        # Fallback: PowerShell Start-Process (mở app mặc định để in)
         ps_cmd = f'Start-Process -FilePath "{fp}" -Verb Print'
         subprocess.run(['powershell', '-Command', ps_cmd],
                       capture_output=True, timeout=30)
