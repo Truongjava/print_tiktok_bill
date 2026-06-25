@@ -507,7 +507,7 @@ class App:
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
-        self.pdf_print_settings = tk.StringVar(value='paper=A4,pagespersheet=2,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
+        self.pdf_print_settings = tk.StringVar(value='paper=Letter,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -610,7 +610,7 @@ class App:
         r4 = tk.Frame(parent, bg='#f0f2f5'); r4.pack(fill='x')
         tk.Label(r4, text='   Cài đặt in PDF:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
         tk.Entry(r4, textvariable=self.pdf_print_settings, font=('Segoe UI',8), width=35).pack(side='left', padx=(4,0))
-        tk.Label(r4, text='(vd: paper=A4,pagespersheet=2)', font=('Segoe UI',7), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=4)
+        tk.Label(r4, text='(vd: paper=Letter,duplex=simplex)', font=('Segoe UI',7), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=4)
 
     def _build_schedule(self, parent):
         modes = [('Chạy 1 lần','once'), ('Lặp mỗi N giờ','interval'), ('Giờ cố định trong ngày','daily')]
@@ -885,11 +885,11 @@ class App:
 
     def _print_file(self, file_path, printer_name, pdf_settings='paper=A4'):
         """In file (PDF hoặc Excel) ra máy in chỉ định (Windows).
-        pdf_settings: chuỗi cài đặt cho SumatraPDF (vd: 'paper=A4,pagespersheet=2')"""
+        pdf_settings: chuỗi cài đặt (vd: 'paper=A4,pagespersheet=2,duplex=simplex')"""
         import subprocess, os as _os
         fp = str(file_path)
 
-        # ── PDF: in qua SumatraPDF ──
+        # ── PDF: tự merge 2-up nếu cần, rồi in qua SumatraPDF ──
         if fp.lower().endswith('.pdf'):
             sumatra_exe = None
             sumatra_paths = [
@@ -901,18 +901,36 @@ class App:
                 if Path(sp).exists():
                     sumatra_exe = sp
                     break
+
+            # Luôn tự merge 2-up cho PDF (nếu có ≥2 trang) — layout Letter Portrait 130%
+            print_path = fp
+            temp_merged = None
+            try:
+                temp_merged = self._merge_pdf_2up(fp)
+                if temp_merged:
+                    print_path = temp_merged
+            except Exception:
+                pass  # fallback: in thẳng file gốc
+
             if sumatra_exe:
-                cmd = [sumatra_exe, '-print-to', printer_name, fp]
+                cmd = [sumatra_exe, '-print-to', printer_name, print_path]
                 if pdf_settings:
                     cmd += ['-print-settings', pdf_settings]
                 subprocess.run(cmd, check=False, timeout=60)
-                return
             else:
                 self._warn_sumatra()
                 subprocess.run(['powershell', '-Command',
-                    f'Start-Process -FilePath "{fp}" -Verb Print'],
+                    f'Start-Process -FilePath "{print_path}" -Verb Print'],
                     capture_output=True, timeout=30)
-                return
+
+            # Dọn file tạm
+            if temp_merged:
+                def _cleanup(p=temp_merged):
+                    import time; time.sleep(5)
+                    try: _os.remove(p)
+                    except: pass
+                threading.Timer(5, _cleanup).start()
+            return
 
         # ── Excel: in thẳng qua COM automation (A4 mặc định) ──
         if fp.lower().endswith('.xlsx') or fp.lower().endswith('.xls'):
@@ -935,6 +953,49 @@ class App:
         subprocess.run(['powershell', '-Command',
             f'Start-Process -FilePath "{fp}" -Verb Print'],
             capture_output=True, timeout=30)
+
+    def _merge_pdf_2up(self, pdf_path):
+        """Gộp 2 trang PDF thành 1 trang Letter Portrait (2 label xếp dọc, scale 130%).
+        Trả về đường dẫn file PDF đã merge, hoặc None nếu thất bại."""
+        import os as _os
+        try:
+            from pypdf import PdfReader, PdfWriter, PageObject, Transformation
+        except ImportError:
+            return None
+        try:
+            reader = PdfReader(pdf_path)
+            pages = reader.pages
+            if len(pages) < 2:
+                return None  # chỉ 1 trang, không cần merge
+
+            # Letter Portrait: 612 x 792 pts, 2 trang xếp dọc
+            canvas_w, canvas_h = 612, 792
+            margin = 40
+            gap = 40
+            scale_factor = 1.30  # 130%
+
+            canvas = PageObject.create_blank_page(width=canvas_w, height=canvas_h)
+            avail_h = canvas_h - 2*margin - gap
+            half_h = avail_h / 2
+
+            for i, page in enumerate(pages[:2]):
+                pw = float(page.mediabox.width)
+                ph = float(page.mediabox.height)
+                scale = min((canvas_w - 2*margin) / pw, half_h / ph) * scale_factor
+                sw, sh = pw * scale, ph * scale
+                tx = (canvas_w - sw) / 2
+                ty = margin + i * (half_h + gap) + (half_h - sh) / 2
+                canvas.merge_transformed_page(page,
+                    Transformation().scale(scale).translate(tx / scale, ty / scale))
+
+            writer = PdfWriter()
+            writer.add_page(canvas)
+            temp_path = pdf_path + '.2up.pdf'
+            with open(temp_path, 'wb') as f:
+                writer.write(f)
+            return temp_path
+        except Exception:
+            return None
 
     def _warn_sumatra(self):
         """Cảnh báo 1 lần nếu chưa cài SumatraPDF."""
