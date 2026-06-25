@@ -24,13 +24,12 @@ BILL_DIR = BASE_DIR / 'bill_calculate'
 UPLOAD_DIR = BILL_DIR / 'uploads'
 
 if getattr(sys, 'frozen', False):
-    # Chạy file .exe
-    _os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _os.path.join(sys._MEIPASS, 'ms-playwright')
-    # Outputs luôn lưu cạnh exe
+    # Chạy file .exe — dùng Playwright browser đã cài sẵn trên máy
+    _os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH',
+        _os.path.join(_os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright'))
     BASE_DIR = Path(sys.executable).parent
     BILL_DIR = BASE_DIR / 'bill_calculate'
     UPLOAD_DIR = BILL_DIR / 'uploads'
-    # Mặc định: dùng file đã nhúng trong exe (không giải nén ra ngoài)
     DEFAULT_COOKIE = Path(sys._MEIPASS) / 'seller-vn.tiktok.com_23-06-2026.json'
     MASTER_DEFAULT = Path(sys._MEIPASS) / 'mã combosss.xlsx'
     RETAIL_DEFAULT = Path(sys._MEIPASS) / 'sản phẩm bán lẻ.xlsx'
