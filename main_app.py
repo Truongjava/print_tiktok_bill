@@ -507,7 +507,7 @@ class App:
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
-        self.pdf_print_settings = tk.StringVar(value='paper=A4')  # cài đặt in cho PDF (SumatraPDF)
+        self.pdf_print_settings = tk.StringVar(value='paper=A4,pagespersheet=2')  # cài đặt in cho PDF (SumatraPDF)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -889,85 +889,49 @@ class App:
         import subprocess, os as _os
         fp = str(file_path)
 
-        # ── Tìm SumatraPDF ──
-        sumatra_exe = None
-        sumatra_paths = [
-            r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
-            r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
-            r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
-        ]
-        for sp in sumatra_paths:
-            if Path(sp).exists():
-                sumatra_exe = sp
-                break
-
-        def _print_pdf_via_sumatra(pdf_path):
-            """In 1 file PDF qua SumatraPDF."""
-            cmd = [sumatra_exe, '-print-to', printer_name, str(pdf_path)]
-            if pdf_settings:
-                cmd += ['-print-settings', pdf_settings]
-            subprocess.run(cmd, check=False, timeout=60)
-
-        # ── PDF: in thẳng qua SumatraPDF ──
+        # ── PDF: in qua SumatraPDF ──
         if fp.lower().endswith('.pdf'):
+            sumatra_exe = None
+            sumatra_paths = [
+                r'C:\Users\thanh\AppData\Local\SumatraPDF\SumatraPDF.exe',
+                r'C:\Program Files\SumatraPDF\SumatraPDF.exe',
+                r'C:\Program Files (x86)\SumatraPDF\SumatraPDF.exe',
+            ]
+            for sp in sumatra_paths:
+                if Path(sp).exists():
+                    sumatra_exe = sp
+                    break
             if sumatra_exe:
-                _print_pdf_via_sumatra(fp)
+                cmd = [sumatra_exe, '-print-to', printer_name, fp]
+                if pdf_settings:
+                    cmd += ['-print-settings', pdf_settings]
+                subprocess.run(cmd, check=False, timeout=60)
                 return
             else:
                 self._warn_sumatra()
-                # Fallback PowerShell
                 subprocess.run(['powershell', '-Command',
                     f'Start-Process -FilePath "{fp}" -Verb Print'],
                     capture_output=True, timeout=30)
                 return
 
-        # ── Excel: chuyển sang PDF tạm rồi in qua SumatraPDF ──
+        # ── Excel: in thẳng qua COM automation (A4 mặc định) ──
         if fp.lower().endswith('.xlsx') or fp.lower().endswith('.xls'):
             try:
                 import pythoncom, win32com.client
                 pythoncom.CoInitialize()
                 excel = win32com.client.Dispatch("Excel.Application")
                 excel.Visible = False
-                abs_path = _os.path.abspath(fp)
-                workbook = excel.Workbooks.Open(abs_path)
-                # Xuất ra PDF tạm
-                temp_pdf = abs_path + '.temp_print.pdf'
-                workbook.ExportAsFixedFormat(0, temp_pdf)  # 0 = xlTypePDF
+                workbook = excel.Workbooks.Open(_os.path.abspath(fp))
+                workbook.PrintOut(ActivePrinter=printer_name)
                 workbook.Close(False)
                 excel.Quit()
                 pythoncom.CoUninitialize()
-                # In PDF tạm qua SumatraPDF (nếu có) hoặc PowerShell
-                if sumatra_exe:
-                    _print_pdf_via_sumatra(temp_pdf)
-                else:
-                    subprocess.run(['powershell', '-Command',
-                        f'Start-Process -FilePath "{temp_pdf}" -Verb Print'],
-                        capture_output=True, timeout=30)
-                # Dọn dẹp file tạm sau 5 giây
-                def _cleanup():
-                    try: _os.remove(temp_pdf)
-                    except: pass
-                threading.Timer(5, _cleanup).start()
                 return
             except Exception:
                 try: pythoncom.CoUninitialize()
                 except: pass
-                # Fallback: in thẳng qua COM PrintOut
-                try:
-                    import pythoncom as _pc2, win32com.client as _wc2
-                    _pc2.CoInitialize()
-                    ex = _wc2.Dispatch("Excel.Application")
-                    ex.Visible = False
-                    wb = ex.Workbooks.Open(_os.path.abspath(fp))
-                    wb.PrintOut(ActivePrinter=printer_name)
-                    wb.Close(False)
-                    ex.Quit()
-                    _pc2.CoUninitialize()
-                    return
-                except Exception:
-                    pass
 
-        # ── Fallback cuối: PowerShell Start-Process ──
+        # ── Fallback: PowerShell ──
         subprocess.run(['powershell', '-Command',
             f'Start-Process -FilePath "{fp}" -Verb Print'],
             capture_output=True, timeout=30)
