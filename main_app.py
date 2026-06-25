@@ -43,7 +43,7 @@ else:
     RETAIL_DEFAULT = BASE_DIR / 'sản phẩm bán lẻ.xlsx'
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
-ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship&page_size=50'
+ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=1&selected_sort=11&tab=to_ship&page_size=50'
 BATCH_SIZE = 50
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -174,66 +174,36 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             except Exception as e:
                 log_cb(f'  ⚠ Không lưu được ID đơn hàng: {e}', 'warn')
 
-            # In chứng từ → chọn A4 → In
+            # Click nút "Sắp xếp vận chuyển và in"
             state_cb('printing', f'Batch {batch_num}: Đang in...')
-            page.locator('button:has-text("In chứng từ")').first.wait_for(timeout=10000)
-            page.locator('button:has-text("In chứng từ")').first.click()
-            page.wait_for_timeout(3000)
-
-            page.wait_for_selector('text=Nhãn vận chuyển', timeout=10000)
-            page.wait_for_timeout(1000)
-            # Giữ nguyên A6 vận chuyển (đã checked) + check thêm A4
-            # → 2 loại: A4 + A6 vận chuyển
-            for doc_label in ['Danh sách lấy hàng (A4)']:
+            ship_btn = None
+            for btn_text in ['Sắp xếp vận chuyển và in', 'Arrange shipment and print', 'Sắp xếp vận chuyển']:
                 try:
-                    lbl = page.locator('label').filter(has_text=doc_label).first
-                    if lbl.count() > 0:
-                        inp = lbl.locator('input')
-                        if inp.count() > 0 and not inp.is_checked():
-                            lbl.click(); page.wait_for_timeout(300)
+                    btn = page.locator(f'button:has-text("{btn_text}")').first
+                    if btn.count() > 0 and btn.is_visible(timeout=3000):
+                        ship_btn = btn; break
                 except: pass
-            page.wait_for_timeout(2000)
-            log_cb('  ✓ Đã chọn: A4 + A6 vận chuyển', 'ok')
-
-            # Click nút In trong modal
-            in_btn = None
-            for _ in range(20):
-                for b in page.locator('.p-modal button, [class*="modal"] button').all():
-                    if b.inner_text().strip() == 'In' and b.is_enabled(): in_btn = b; break
-                if in_btn: break; page.wait_for_timeout(500)
-            if not in_btn:
-                in_btn = page.locator('.p-modal button:has-text("In")').first
-                in_btn.evaluate('el => { el.disabled = false; el.classList.remove("p-btn-disabled"); }')
-            in_btn.click()
-            log_cb('  ✓ Đã bấm In', 'ok')
-            page.wait_for_timeout(3000)
-
-            # ── Bước 1: Bấm "Tiếp tục in" trong popup đầu tiên ──
-            state_cb('printing', f'Batch {batch_num}: Đợi popup "Tiếp tục in"...')
-            tieptuc_btn = None
-            for _ in range(30):
-                btns = page.locator('button:has-text("Tiếp tục in"), button:has-text("Continue"), button:has-text("Xác nhận")')
-                cnt = btns.count()
-                for j in range(cnt):
-                    b = btns.nth(j)
+            if not ship_btn:
+                # Fallback: tìm button chứa text "vận chuyển" và "in"
+                all_btns = page.locator('button').all()
+                for b in all_btns:
                     try:
-                        if b.is_visible(timeout=500):
-                            tieptuc_btn = b; break
+                        txt = b.inner_text().strip().lower()
+                        if 'vận chuyển' in txt and 'in' in txt:
+                            ship_btn = b; break
                     except: pass
-                if tieptuc_btn: break
-                page.wait_for_timeout(1000)
-            if not tieptuc_btn:
-                log_cb('  ✗ KHÔNG TÌM THẤY nút "Tiếp tục in" — kiểm tra popup!', 'err')
+            if not ship_btn:
+                log_cb('  ✗ KHÔNG TÌM THẤY nút "Sắp xếp vận chuyển và in"!', 'err')
                 try:
-                    ss = str(Path(output_dir) / f'debug_no_tieptucin_batch{batch_num}.png')
+                    ss = str(Path(output_dir) / f'debug_no_ship_btn_batch{batch_num}.png')
                     page.screenshot(path=ss); log_cb(f'  📸 Screenshot: {ss}', 'info')
                 except: pass
                 total_printed += checked; break
-            tieptuc_btn.click(timeout=5000)
-            log_cb('  ✓ Đã bấm "Tiếp tục in"', 'ok')
+            ship_btn.click()
+            log_cb('  ✓ Đã bấm "Sắp xếp vận chuyển và in"', 'ok')
             page.wait_for_timeout(3000)
 
-            # ── Bước 2: Bấm "Tải xuống tất cả tập tin" trong popup thứ hai ──
+            # ── Đợi popup "Tải xuống tất cả" xuất hiện ──
             state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
 
             taixuong_btn = None
