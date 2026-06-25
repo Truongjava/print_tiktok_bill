@@ -128,7 +128,10 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                         opt = page.locator('[class*="p-select-option"]').filter(has_text='50/Page').first
                         if opt.count() > 0:
                             opt.click()
-                            page.wait_for_timeout(3000)
+                            # Đợi bảng load lại với 50 đơn (network idle + selector)
+                            page.wait_for_load_state('networkidle', timeout=30000)
+                            page.wait_for_selector('td.col-checkbox label.p-checkbox', timeout=15000)
+                            page.wait_for_timeout(1000)
                             log_cb('  ✓ Đã chọn 50 đơn/trang', 'ok')
             except: pass
 
