@@ -44,14 +44,14 @@ else:
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
 ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=2&selected_sort=11&tab=to_ship'
-BATCH_SIZE = 100  # fallback, sẽ bị ghi đè bởi page_size từ UI
+BATCH_SIZE = 50  # fallback, sẽ bị ghi đè bởi page_size từ UI
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ============================================================
 # AUTOMATION
 # ============================================================
 def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
-                   page_size=100):
+                   page_size=50):
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
@@ -351,7 +351,7 @@ class App:
             if getattr(sys, 'frozen', False):
                 self.retail_path.set(f'[{p.name} — đã tích hợp sẵn]')
         self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
-        self.page_size = tk.IntVar(value=100)  # số đơn hiển thị mỗi trang (tối đa 100)
+        self.page_size = tk.IntVar(value=50)  # số đơn hiển thị mỗi trang (tối đa 50)
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -439,8 +439,8 @@ class App:
         # Số đơn mỗi trang
         r2 = tk.Frame(parent, bg='#f0f2f5'); r2.pack(fill='x', pady=(4,0))
         tk.Label(r2, text='Đơn/trang:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280').pack(side='left')
-        tk.Spinbox(r2, from_=20, to=100, increment=10, width=6, textvariable=self.page_size, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
-        tk.Label(r2, text='(20-100, mặc định 100)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        tk.Spinbox(r2, from_=20, to=50, increment=10, width=6, textvariable=self.page_size, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
+        tk.Label(r2, text='(20-50, mặc định 50)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
         tk.Label(parent, text='📑 Luôn in cả 3 loại: Danh sách lấy hàng (A4) + Đóng gói (A6) + Vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
 
