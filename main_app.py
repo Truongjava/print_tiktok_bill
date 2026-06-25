@@ -227,7 +227,45 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 log_cb('  ✓ Đã bấm "Tiếp theo"', 'ok')
                 page.wait_for_timeout(3000)
 
-            # ── Bước 2: Popup "Tải xuống tất cả" ──
+            # ── Bước 2: Tick chọn Danh sách đóng gói + Danh sách lấy hàng ──
+            state_cb('printing', f'Batch {batch_num}: Chọn loại chứng từ...')
+            # Đợi popup hiện ra với các checkbox
+            page.wait_for_timeout(2000)
+            for doc_label in ['Danh sách đóng gói', 'Danh sách lấy hàng']:
+                try:
+                    lbl = page.locator('label').filter(has_text=doc_label).first
+                    if lbl.count() > 0:
+                        inp = lbl.locator('input')
+                        if inp.count() > 0 and not inp.is_checked():
+                            lbl.click(); page.wait_for_timeout(300)
+                            log_cb(f'  ✓ Đã tick: {doc_label}', 'ok')
+                except: pass
+            page.wait_for_timeout(1000)
+
+            # ── Bấm nút "In nhãn ngay sau khi vận chuyển" ──
+            in_btn = None
+            for btn_text in ['In nhãn ngay sau khi vận chuyển', 'In nhãn ngay', 'Print label immediately']:
+                try:
+                    btn = page.locator(f'button:has-text("{btn_text}")').first
+                    if btn.count() > 0 and btn.is_visible(timeout=2000):
+                        in_btn = btn; break
+                except: pass
+            if not in_btn:
+                # Fallback: tìm button có text "In nhãn"
+                for b in page.locator('button').all():
+                    try:
+                        txt = b.inner_text().strip().lower()
+                        if 'in nhãn' in txt or 'in nhan' in txt:
+                            in_btn = b; break
+                    except: pass
+            if not in_btn:
+                log_cb('  ✗ KHÔNG TÌM THẤY nút "In nhãn ngay" — thử tiếp tục...', 'warn')
+            else:
+                in_btn.click(timeout=5000)
+                log_cb('  ✓ Đã bấm "In nhãn ngay"', 'ok')
+                page.wait_for_timeout(3000)
+
+            # ── Bước 3: Popup "Tải xuống tất cả" ──
             state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
 
             taixuong_btn = None
