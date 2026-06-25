@@ -34,14 +34,14 @@ if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
     BILL_DIR = BASE_DIR / 'bill_calculate'
     UPLOAD_DIR = BILL_DIR / 'uploads'
-    DEFAULT_COOKIE = Path(sys._MEIPASS) / 'seller-vn.tiktok.com_23-06-2026.json'
+    DEFAULT_COOKIE = Path(sys._MEIPASS) / 'seller-vn.tiktok.com_25-06-2026.json'
     MASTER_DEFAULT = Path(sys._MEIPASS) / 'mã combosss.xlsx'
     RETAIL_DEFAULT = Path(sys._MEIPASS) / 'sản phẩm bán lẻ.xlsx'
 else:
     # Chạy source code
     _os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH',
         _os.path.join(_os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright'))
-    DEFAULT_COOKIE = BASE_DIR / 'seller-vn.tiktok.com_23-06-2026.json'
+    DEFAULT_COOKIE = BASE_DIR / 'seller-vn.tiktok.com_25-06-2026.json'
     MASTER_DEFAULT = BASE_DIR / 'mã combosss.xlsx'
     RETAIL_DEFAULT = BASE_DIR / 'sản phẩm bán lẻ.xlsx'
 
