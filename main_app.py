@@ -203,7 +203,31 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             log_cb('  ✓ Đã bấm "Sắp xếp vận chuyển và in"', 'ok')
             page.wait_for_timeout(3000)
 
-            # ── Đợi popup "Tải xuống tất cả" xuất hiện ──
+            # ── Bước 1: Bấm "Tiếp theo" trong popup "Tính năng mới In nhãn" ──
+            state_cb('printing', f'Batch {batch_num}: Đợi popup "Tiếp theo"...')
+            tieptheo_btn = None
+            for _ in range(20):
+                # Tìm nút "Tiếp theo" (có thể có dấu →)
+                for selector in ['button:has-text("Tiếp theo")', 'button:has-text("Next")']:
+                    try:
+                        btns = page.locator(selector)
+                        cnt = btns.count()
+                        for j in range(cnt):
+                            b = btns.nth(j)
+                            if b.is_visible(timeout=500):
+                                tieptheo_btn = b; break
+                    except: pass
+                    if tieptheo_btn: break
+                if tieptheo_btn: break
+                page.wait_for_timeout(1000)
+            if not tieptheo_btn:
+                log_cb('  ⚠ Không tìm thấy nút "Tiếp theo" — thử tiếp tục...', 'warn')
+            else:
+                tieptheo_btn.click(timeout=5000)
+                log_cb('  ✓ Đã bấm "Tiếp theo"', 'ok')
+                page.wait_for_timeout(3000)
+
+            # ── Bước 2: Popup "Tải xuống tất cả" ──
             state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
 
             taixuong_btn = None
