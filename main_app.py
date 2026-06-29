@@ -47,6 +47,11 @@ else:
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
 ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=1&selected_sort=11&tab=to_ship&page_size=50'
+# URL filter theo đơn vị vận chuyển
+CARRIER_URLS = {
+    'J&T': ORDERS_URL + '&shipping_provider_id%5B%5D=6841743441349706241',
+    'GHN': ORDERS_URL + '&shipping_provider_id%5B%5D=7252807945006614278',
+}
 BATCH_SIZE = 50
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -54,7 +59,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # AUTOMATION
 # ============================================================
 def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
-                   existing_playwright=None, existing_browser=None):
+                   existing_playwright=None, existing_browser=None, carrier=None):
+    """carrier: None (tất cả), 'J&T', hoặc 'GHN'"""
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
@@ -62,6 +68,8 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
     total_printed = 0
     target = max_orders if max_orders > 0 else 10**9
     batch_num = 0
+    carrier_label = f' [{carrier}]' if carrier else ''
+    orders_url = CARRIER_URLS.get(carrier, ORDERS_URL)  # dùng URL filter nếu có carrier
     if stop_event is None:
         stop_event = threading.Event()  # fallback
 
@@ -82,7 +90,7 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
         else:
             page = context.new_page()
             log_cb('♻ Dùng lại browser — mở tab mới...', 'info')
-        page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
+        page.goto(orders_url, wait_until='networkidle', timeout=60000)
         page.wait_for_timeout(4000)
     else:
         playwright = sync_playwright().start()
@@ -111,11 +119,11 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 log_cb('⏹ Đã dừng theo yêu cầu.', 'warn'); break
             batch_num += 1
             batch_target = min(BATCH_SIZE, target - total_printed)
-            log_cb(f'▸ Batch {batch_num}: chọn {batch_target} đơn (đã in {total_printed}/{target})', 'batch')
+            log_cb(f'▸ Batch {batch_num}{carrier_label}: chọn {batch_target} đơn (đã in {total_printed}/{target})', 'batch')
 
             # Vào trang đơn hàng
             state_cb('navigating', f'Batch {batch_num}: Đang tải danh sách đơn...')
-            page.goto(ORDERS_URL, wait_until='networkidle', timeout=60000)
+            page.goto(orders_url, wait_until='networkidle', timeout=60000)
             page.wait_for_timeout(4000)
 
             # Đếm & chọn
@@ -131,8 +139,11 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                 except: pass
             page.wait_for_timeout(800)
 
-            if total_avail < batch_target:
-                log_cb(f'  ⚠ Chỉ có {total_avail} đơn, chọn hết {checked}', 'warn')
+            # Nếu số đơn thực tế ít hơn batch_target → đây là batch cuối, in nốt rồi dừng
+            force_stop = total_avail < batch_target
+
+            if force_stop:
+                log_cb(f'  ⚠ Chỉ còn {total_avail} đơn — in nốt rồi dừng', 'warn')
             else:
                 log_cb(f'  ✓ Đã chọn {checked}/{batch_target} đơn', 'ok')
             if checked == 0: log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
@@ -207,10 +218,11 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             page.wait_for_timeout(3000)
 
             # ── Bước 1: Bấm "Tiếp theo" trong popup "Tính năng mới In nhãn" ──
+            # NẾU CÓ "Tiếp theo" → lần chạy đầu: đi qua đầy đủ các bước popup
+            # NẾU KHÔNG CÓ → lần chạy sau: TikTok bỏ qua hết, thẳng popup "Tải xuống tất cả"
             state_cb('printing', f'Batch {batch_num}: Đợi popup "Tiếp theo"...')
             tieptheo_btn = None
-            for _ in range(20):
-                # Tìm nút "Tiếp theo" (có thể có dấu →)
+            for _ in range(10):
                 for selector in ['button:has-text("Tiếp theo")', 'button:has-text("Next")']:
                     try:
                         btns = page.locator(selector)
@@ -223,50 +235,51 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                     if tieptheo_btn: break
                 if tieptheo_btn: break
                 page.wait_for_timeout(1000)
-            if not tieptheo_btn:
-                log_cb('  ⚠ Không tìm thấy nút "Tiếp theo" — thử tiếp tục...', 'warn')
-            else:
+
+            if tieptheo_btn:
+                # ── Lần đầu: có popup hướng dẫn → đi tuần tự ──
                 tieptheo_btn.click(timeout=5000)
                 log_cb('  ✓ Đã bấm "Tiếp theo"', 'ok')
                 page.wait_for_timeout(3000)
 
-            # ── Bước 2: Tick chọn Danh sách đóng gói + Danh sách lấy hàng ──
-            state_cb('printing', f'Batch {batch_num}: Chọn loại chứng từ...')
-            # Đợi popup hiện ra với các checkbox
-            page.wait_for_timeout(2000)
-            for doc_label in ['Danh sách đóng gói', 'Danh sách lấy hàng']:
-                try:
-                    lbl = page.locator('label').filter(has_text=doc_label).first
-                    if lbl.count() > 0:
-                        inp = lbl.locator('input')
-                        if inp.count() > 0 and not inp.is_checked():
-                            lbl.click(); page.wait_for_timeout(300)
-                            log_cb(f'  ✓ Đã tick: {doc_label}', 'ok')
-                except: pass
-            page.wait_for_timeout(1000)
-
-            # ── Bấm nút "In nhãn ngay sau khi vận chuyển" ──
-            in_btn = None
-            for btn_text in ['In nhãn ngay sau khi vận chuyển', 'In nhãn ngay', 'Print label immediately']:
-                try:
-                    btn = page.locator(f'button:has-text("{btn_text}")').first
-                    if btn.count() > 0 and btn.is_visible(timeout=2000):
-                        in_btn = btn; break
-                except: pass
-            if not in_btn:
-                # Fallback: tìm button có text "In nhãn"
-                for b in page.locator('button').all():
+                # Bước 2: Tick chọn Danh sách đóng gói + Danh sách lấy hàng
+                state_cb('printing', f'Batch {batch_num}: Chọn loại chứng từ...')
+                page.wait_for_timeout(2000)
+                for doc_label in ['Danh sách đóng gói', 'Danh sách lấy hàng']:
                     try:
-                        txt = b.inner_text().strip().lower()
-                        if 'in nhãn' in txt or 'in nhan' in txt:
-                            in_btn = b; break
+                        lbl = page.locator('label').filter(has_text=doc_label).first
+                        if lbl.count() > 0:
+                            inp = lbl.locator('input')
+                            if inp.count() > 0 and not inp.is_checked():
+                                lbl.click(); page.wait_for_timeout(300)
+                                log_cb(f'  ✓ Đã tick: {doc_label}', 'ok')
                     except: pass
-            if not in_btn:
-                log_cb('  ✗ KHÔNG TÌM THẤY nút "In nhãn ngay" — thử tiếp tục...', 'warn')
+                page.wait_for_timeout(1000)
+
+                # Bước 3: Bấm nút "In nhãn ngay sau khi vận chuyển"
+                in_btn = None
+                for btn_text in ['In nhãn ngay sau khi vận chuyển', 'In nhãn ngay', 'Print label immediately']:
+                    try:
+                        btn = page.locator(f'button:has-text("{btn_text}")').first
+                        if btn.count() > 0 and btn.is_visible(timeout=2000):
+                            in_btn = btn; break
+                    except: pass
+                if not in_btn:
+                    for b in page.locator('button').all():
+                        try:
+                            txt = b.inner_text().strip().lower()
+                            if 'in nhãn' in txt or 'in nhan' in txt:
+                                in_btn = b; break
+                        except: pass
+                if in_btn:
+                    in_btn.click(timeout=5000)
+                    log_cb('  ✓ Đã bấm "In nhãn ngay"', 'ok')
+                    page.wait_for_timeout(3000)
+                else:
+                    log_cb('  ⚠ Không tìm thấy nút "In nhãn ngay"', 'warn')
             else:
-                in_btn.click(timeout=5000)
-                log_cb('  ✓ Đã bấm "In nhãn ngay"', 'ok')
-                page.wait_for_timeout(3000)
+                # ── Lần sau: không có popup hướng dẫn → thẳng popup tải xuống ──
+                log_cb('  ⏭ Không có popup "Tiếp theo" → đi thẳng bước tải xuống', 'info')
 
             # ── Bước 3: Popup "Tải xuống tất cả" ──
             state_cb('downloading', f'Batch {batch_num}: Đợi popup "Tải xuống tất cả"...')
@@ -297,7 +310,10 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             downloaded_files = []
             def on_download(dl):
                 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                suggested = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{ts}.pdf'
+                carrier_prefix = carrier.replace('&', '') + '_' if carrier else ''
+                base_name = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{ts}.pdf'
+                # Luôn thêm carrier prefix vào đầu tên file để phân biệt J&T / GHN
+                suggested = carrier_prefix + base_name if carrier else base_name
                 bp = str(Path(output_dir) / suggested)
                 dl.save_as(bp)
                 downloaded_files.append(bp)
@@ -316,6 +332,10 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
 
             total_printed += checked
             log_cb(f'  📊 Tiến độ: {total_printed}/{target} đơn, {len(pdf_files)} file PDF', 'info')
+
+            # Nếu đã in hết đơn khả dụng → dừng, không loop lại (tránh vòng lặp vô hạn khi có đơn mới)
+            if force_stop:
+                log_cb('  ✓ Đã in hết đơn hiện có — hoàn thành.', 'ok'); break
 
             if total_printed < target and total_avail > 0:
                 page.wait_for_timeout(2000)
@@ -508,7 +528,9 @@ class App:
             p = Path(self._retail_real)
             if getattr(sys, 'frozen', False):
                 self.retail_path.set(f'[{p.name} — đã tích hợp sẵn]')
-        self.doc_type = tk.StringVar(value='a4'); self.max_orders = tk.IntVar(value=0)
+        self.doc_type = tk.StringVar(value='a4')
+        self.jt_orders = tk.IntVar(value=0)     # số đơn J&T Express
+        self.ghn_orders = tk.IntVar(value=0)    # số đơn GHN
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
         self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
         self.pdf_print_settings = tk.StringVar(value='paper=A4,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
@@ -600,10 +622,16 @@ class App:
         self.output_status.config(text='✅ Sẵn sàng', fg='#059669')
 
     def _build_options(self, parent):
-        r = tk.Frame(parent, bg='#f0f2f5'); r.pack(fill='x')
-        tk.Label(r, text='Số đơn in:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280').pack(side='left')
-        tk.Spinbox(r, from_=0, to=9999, width=6, textvariable=self.max_orders, font=('Segoe UI',9)).pack(side='left', padx=(8,0))
-        tk.Label(r, text='(0 = tất cả, >50 = tự chia batch)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 1: Số đơn J&T
+        r1 = tk.Frame(parent, bg='#f0f2f5'); r1.pack(fill='x')
+        tk.Label(r1, text='J&T Express:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r1, from_=0, to=9999, width=6, textvariable=self.jt_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r1, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 2: Số đơn GHN
+        r2 = tk.Frame(parent, bg='#f0f2f5'); r2.pack(fill='x', pady=(2,0))
+        tk.Label(r2, text='GHN:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r2, from_=0, to=9999, width=6, textvariable=self.ghn_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r2, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
         tk.Label(parent, text='📑 Luôn in: Danh sách lấy hàng (A4) + Đơn vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
         # In tự động
@@ -785,34 +813,57 @@ class App:
         try:
             cookie = self._cookie_real; out_dir = self.output_dir.get()
             master = self._master_real; retail = self._retail_real
-            doc = self.doc_type.get(); n = self.max_orders.get()
+            doc = self.doc_type.get()
             os.makedirs(out_dir, exist_ok=True)
 
-            # Step 1: Download
-            self.stop_event.clear()
-            # Dùng job_stop của worker nếu có, fallback về stop_event của app
+            # Xác định danh sách carrier cần xử lý (J&T trước, GHN sau)
+            carriers_to_process = []
+            jt = self.jt_orders.get()
+            ghn = self.ghn_orders.get()
+            if jt != 0:
+                carriers_to_process.append(('J&T', jt if jt > 0 else 0))
+            if ghn != 0:
+                carriers_to_process.append(('GHN', ghn if ghn > 0 else 0))
+            # Nếu cả 2 đều = 0 → chạy không lọc (giữ nguyên hành vi cũ)
+            if not carriers_to_process:
+                carriers_to_process.append((None, 0))
+
+            all_pdf_paths = []
+            all_results = []  # gom kết quả calculator từ tất cả carrier
             stop_signal = job_stop if job_stop is not None else self.stop_event
-            self.log(f'📥 Tải PDF ({n if n>0 else "tất cả"} đơn)...', 'info')
-            pdf_paths, pw, br = run_automation(cookie, doc, out_dir, n,
-                lambda m, t='': self.root.after(0, self.log, m, t),
-                lambda s, m: self.root.after(0, self._set_state, s, m),
-                stop_signal,
-                existing_playwright=playwright, existing_browser=browser)
 
-            for p in pdf_paths:
-                if Path(p).exists(): self._add_result(f'📄 {Path(p).name}')
-            self.log(f'📥 Đã tải {len(pdf_paths)} file PDF', 'ok' if pdf_paths else 'warn')
+            for carrier, count in carriers_to_process:
+                self.stop_event.clear()
+                carrier_display = carrier if carrier else 'tất cả'
+                count_display = f'{count}' if count > 0 else 'tất cả'
+                self.log(f'📥 Tải PDF [{carrier_display}] ({count_display} đơn)...', 'info')
 
-            # Step 2: Calculator
-            results = []
-            if pdf_paths:
-                self.log('📊 Đang tính bill...', 'info')
-                results = run_calculator(pdf_paths, out_dir, master, retail,
-                    lambda m, t='': self.root.after(0, self.log, m, t))
-                for r in results:
-                    for key, lbl in [('excel','📊'),('pdf','📕'),('pdf_grouped','📋')]:
-                        fp = r['files'].get(key)
-                        if fp and Path(fp).exists(): self._add_result(f'{lbl} {Path(fp).name}')
+                pdf_paths, pw, br = run_automation(cookie, doc, out_dir, count,
+                    lambda m, t='': self.root.after(0, self.log, m, t),
+                    lambda s, m: self.root.after(0, self._set_state, s, m),
+                    stop_signal,
+                    existing_playwright=playwright, existing_browser=browser,
+                    carrier=carrier)
+
+                # Giữ browser cho carrier tiếp theo
+                if pw: playwright = pw
+                if br: browser = br
+
+                for p in pdf_paths:
+                    if Path(p).exists(): self._add_result(f'📄 {Path(p).name}')
+                all_pdf_paths.extend(pdf_paths)
+                self.log(f'📥 [{carrier_display}]: đã tải {len(pdf_paths)} file PDF', 'ok' if pdf_paths else 'warn')
+
+                # Calculator riêng cho từng carrier
+                if pdf_paths:
+                    self.log(f'📊 Đang tính bill [{carrier_display}]...', 'info')
+                    carrier_results = run_calculator(pdf_paths, out_dir, master, retail,
+                        lambda m, t='': self.root.after(0, self.log, m, t))
+                    for r in carrier_results:
+                        for key, lbl in [('excel','📊'),('pdf','📕'),('pdf_grouped','📋')]:
+                            fp = r['files'].get(key)
+                            if fp and Path(fp).exists(): self._add_result(f'{lbl} {Path(fp).name}')
+                    all_results.extend(carrier_results)
 
             # Step 3: In tự động ra máy in (nếu bật)
             if self.auto_print.get():
@@ -821,12 +872,12 @@ class App:
                 # Thu thập các file cần in từ lần chạy này
                 files_to_print = []
                 # File PDF Shipping Label (từ TikTok)
-                for p in pdf_paths:
+                for p in all_pdf_paths:
                     name = Path(p).name.lower()
                     if Path(p).exists() and ('shipping' in name or 'vận chuyển' in name):
                         files_to_print.append(str(p))
                 # File Excel báo cáo gộp SKU (từ calculator)
-                for r in results:
+                for r in all_results:
                     excel_path = r['files'].get('excel')
                     if excel_path and Path(excel_path).exists():
                         files_to_print.append(excel_path)
@@ -848,7 +899,7 @@ class App:
             self.log('🏁 HOÀN THÀNH!', 'bold_ok')
             self._set_state('done', f'✅ Hoàn thành lúc {datetime.now().strftime("%H:%M:%S")}')
             # Trả về browser/playwright để worker lưu lại cho lần sau
-            return {'playwright': pw, 'browser': br, 'pdf_paths': pdf_paths}
+            return {'playwright': pw, 'browser': br, 'pdf_paths': all_pdf_paths}
         except Exception as e:
             self.log(f'✗ Lỗi: {e}', 'err'); self._set_state('error', f'✗ {e}')
             return {}

@@ -1,5 +1,32 @@
+# ── Dependencies ──
 node_modules/
-dist/
+
+# ── Python cache ──
 __pycache__/
 *.pyc
+
+# ── PyInstaller build artifacts ──
+build/
+dist/
+*.spec
+
+# ── Portable distribution ──
+TTS_Bill_Portable/
+
+# ── Cookie / Session (CHỨA THÔNG TIN ĐĂNG NHẬP) ──
 seller-vn.tiktok.com_*.json
+
+# ── Upload PDF (dữ liệu đơn hàng thật) ──
+bill_calculate/uploads/
+outputs/
+outputs2/
+
+# ── Kết quả tính bill ──
+bill_calculate/outputs/
+
+# ── Dữ liệu kinh doanh thật ──
+mã combosss.xlsx
+sản phẩm bán lẻ.xlsx
+
+# ── IDE / Claude ──
+.claude/
