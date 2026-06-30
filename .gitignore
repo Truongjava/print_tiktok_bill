@@ -25,8 +25,8 @@ outputs2/
 bill_calculate/outputs/
 
 # ── Dữ liệu kinh doanh thật ──
-mã combosss.xlsx
-sản phẩm bán lẻ.xlsx
+mã combo.xlsx
+sp bán lẻ.xlsx
 
 # ── IDE / Claude ──
 .claude/

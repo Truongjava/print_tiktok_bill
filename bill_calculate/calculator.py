@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 
 def load_master_data(master_path: str) -> list[dict]:
     """
-    Đọc file master_data.xlsx (hoặc mã combosss.xlsx).
+    Đọc file master_data.xlsx (hoặc mã combo.xlsx).
     Tự động nhận diện cột theo tên header, không phụ thuộc vị trí.
     Trả về list các dòng, mỗi dòng là dict:
       {seller_sku, sku, qty, qty_sold, promo_qty}
@@ -46,12 +46,12 @@ def load_master_data(master_path: str) -> list[dict]:
                     return ci
         return 0
 
-    col_seller_sku = find_col(['combo', 'seller sku', 'seller_sku', 'mã combo']) or 1
+    col_seller_sku = find_col(['combo', 'seller sku', 'seller_sku', 'mã combo', 'ma combo']) or 1
     col_sku = find_col(['sku']) or 2
-    col_qty = find_col(['sl', 'qty', 'số lượng']) or 3
-    col_qty_sold = find_col(['sl bán', 'qty sold', 'qty_sold', 'bán']) or 4
+    col_qty = find_col(['sl', 'qty', 'số lượng', 'so luong']) or 3
+    col_qty_sold = find_col(['sl bán', 'sl ban', 'qty sold', 'qty_sold', 'bán', 'ban']) or 4
     col_promo = find_col(['sl km', 'promo qty', 'promo_qty', 'km']) or 5
-    col_unit = find_col(['đơn vị tính', 'đơn vị', 'dvt', 'unit']) or 0
+    col_unit = find_col(['đơn vị tính', 'don vi tinh', 'đơn vị', 'don vi', 'dvt', 'unit']) or 0
 
     rows = []
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -99,11 +99,12 @@ def load_retail_data(retail_path: str) -> dict[str, dict]:
                     return ci
         return 0
 
-    col_sku = find_col(['sku']) or 1
-    col_unit = find_col(['don vi tinh', 'don vi', 'dvt', 'unit']) or 2
-    col_qty = find_col(['sl', 'qty', 'so luong']) or 3
-    col_sold = find_col(['sl ban', 'qty sold', 'ban']) or 4
-    col_promo = find_col(['sl km', 'promo qty', 'km']) or 5
+    col_sku = find_col(['sku', 'mã sản phẩm', 'ma san pham', 'mã sản phẩm']) or 1
+    col_name = find_col(['tên sản phẩm', 'ten san pham', 'tên sp', 'product name']) or 0
+    col_unit = find_col(['đơn vị tính', 'don vi tinh', 'đơn vị', 'don vi', 'dvt', 'unit']) or 0
+    col_qty = find_col(['sl', 'qty', 'số lượng', 'so luong']) or 3
+    col_sold = find_col(['sl bán', 'sl ban', 'qty sold', 'bán', 'ban']) or 5
+    col_promo = find_col(['sl km', 'promo qty', 'khuyến mại', 'khuyen mai', 'km']) or 6
 
     retail = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -113,6 +114,7 @@ def load_retail_data(retail_path: str) -> dict[str, dict]:
         retail[sku] = {
             "seller_sku": sku,
             "sku": sku,
+            "product_name": str(row[col_name - 1]).strip() if col_name and row[col_name - 1] is not None else '',
             "unit": str(row[col_unit - 1]).strip() if col_unit and row[col_unit - 1] is not None else '',
             "qty": int(row[col_qty - 1]) if row[col_qty - 1] is not None else 1,
             "qty_sold": int(row[col_sold - 1]) if row[col_sold - 1] is not None else 1,
@@ -257,6 +259,12 @@ def calculate_results(
         if seller_sku in order_counts:
             matched_skus.add(seller_sku)
             mult = order_counts[seller_sku]
+            # Tra cứu tên sản phẩm từ file retail (nếu SKU có trong đó)
+            product_name = ''
+            if retail_lookup:
+                ri = retail_lookup.get(row["sku"])
+                if ri:
+                    product_name = ri.get("product_name", '')
             results.append({
                 "seller_sku": seller_sku,
                 "sku": row["sku"],
@@ -264,6 +272,7 @@ def calculate_results(
                 "qty_sold": row["qty_sold"] * mult,
                 "promo_qty": row["promo_qty"] * mult,
                 "unit": row["unit"],
+                "product_name": product_name,
             })
 
     # Sản phẩm bán lẻ: có trong PDF nhưng không có trong master_data combo
@@ -277,6 +286,7 @@ def calculate_results(
                 "qty_sold": r["qty_sold"] * count,
                 "promo_qty": r["promo_qty"] * count,
                 "unit": r["unit"],
+                "product_name": r.get("product_name", ''),
             })
             matched_skus.add(seller_sku)
 
@@ -313,8 +323,9 @@ def generate_excel(results: list[dict], output_path: str) -> str:
     data_font = Font(name="Arial", size=10)
     total_font = Font(name="Arial", size=10, bold=True)
 
-    headers = ["Seller SKU", "SKU", "Qty", "Qty Sold", "Promo Qty"]
-    col_widths = [22, 16, 10, 12, 14]
+    headers = ["STT", "Seller SKU", "SKU", "Tên sản phẩm", "Qty", "Qty Sold", "Promo Qty"]
+    col_widths = [5, 16, 12, 32, 7, 7, 7]  # tổng ~86 vừa A4 ngang
+    col_aligns = ['C', 'C', 'C', 'L', 'R', 'R', 'R']
 
     # ── Header ──
     for ci, h in enumerate(headers, 1):
@@ -327,11 +338,15 @@ def generate_excel(results: list[dict], output_path: str) -> str:
     # ── Data ──
     for ri, r in enumerate(results):
         rn = ri + 2
-        vals = [r["seller_sku"], r["sku"], r["qty"], r["qty_sold"], r["promo_qty"]]
+        vals = [ri + 1, r["seller_sku"], r["sku"], r.get("product_name", ""), r["qty"], r["qty_sold"], r["promo_qty"]]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(row=rn, column=ci, value=v)
             c.font = data_font
             c.border = thin_border
+            ha = col_aligns[ci - 1] if ci <= len(col_aligns) else 'L'
+            c.alignment = Alignment(horizontal={'C':'center','L':'left','R':'right'}.get(ha, 'left'),
+                                    vertical='center',
+                                    wrap_text=(ci == 4))  # wrap cột Tên sản phẩm
 
     # ── Total row ──
     tr = len(results) + 2
@@ -341,9 +356,11 @@ def generate_excel(results: list[dict], output_path: str) -> str:
 
     ws.cell(row=tr, column=1, value="Tổng").font = total_font
     ws.cell(row=tr, column=1).border = thin_border
-    ws.cell(row=tr, column=2).border = thin_border  # SKU cell trống
+    ws.cell(row=tr, column=2).border = thin_border  # Seller SKU trống
+    ws.cell(row=tr, column=3).border = thin_border  # SKU trống
+    ws.cell(row=tr, column=4).border = thin_border  # Tên sản phẩm trống
 
-    for ci, val in [(3, tong_qty), (4, tong_sold), (5, tong_promo)]:
+    for ci, val in [(5, tong_qty), (6, tong_sold), (7, tong_promo)]:
         c = ws.cell(row=tr, column=ci, value=val)
         c.font = total_font
         c.border = thin_border
@@ -352,25 +369,35 @@ def generate_excel(results: list[dict], output_path: str) -> str:
     for ci, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # ── Print setup: vừa trang in, tránh mất cột ──
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.paperSize = 9  # A4
+
     wb.save(output_path)
     print(f"   📊 Đã tạo Excel: {os.path.basename(output_path)}")
     return output_path
 
 
-def generate_grouped_excel(results: list[dict], output_path: str) -> str:
+def generate_grouped_excel(results: list[dict], output_path: str, carrier: str = '', source_label: str = '') -> str:
     """
     Tạo file Excel gộp theo SKU (không hiện Seller SKU).
     Format: SKU | Đơn vị tính | Qty | Qty Sold | Promo Qty
+    Có dòng tiêu đề in đậm ở đầu để nhận diện khi in giấy.
     """
     # Gộp theo SKU (giống logic generate_grouped_pdf)
     grouped = {}
     for r in results:
         sku = r["sku"]
         if sku not in grouped:
-            grouped[sku] = {"qty": 0, "qty_sold": 0, "promo_qty": 0, "unit": r.get("unit", "")}
+            grouped[sku] = {"qty": 0, "qty_sold": 0, "promo_qty": 0, "unit": r.get("unit", ""), "product_name": r.get("product_name", "")}
         grouped[sku]["qty"] += r["qty"]
         grouped[sku]["qty_sold"] += r["qty_sold"]
         grouped[sku]["promo_qty"] += r["promo_qty"]
+        # Giữ product_name đầu tiên khác rỗng
+        if not grouped[sku]["product_name"] and r.get("product_name", ""):
+            grouped[sku]["product_name"] = r["product_name"]
 
     grouped_list = [{"sku": k, **v} for k, v in grouped.items()]
     grouped_list.sort(key=lambda x: x["sku"])
@@ -380,6 +407,8 @@ def generate_grouped_excel(results: list[dict], output_path: str) -> str:
     ws.title = "Sheet1"
 
     # ── Styles ──
+    title_font = Font(name="Arial", size=14, bold=True, color="1F4E79")
+    title_align = Alignment(horizontal="center", vertical="center")
     hdr_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
     hdr_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
     hdr_align = Alignment(horizontal="center", vertical="center")
@@ -390,37 +419,55 @@ def generate_grouped_excel(results: list[dict], output_path: str) -> str:
     data_font = Font(name="Arial", size=10)
     total_font = Font(name="Arial", size=10, bold=True)
 
-    headers = ["SKU", "Đơn vị tính", "SL", "SL bán", "SL KM"]
-    col_widths = [20, 14, 12, 14, 16]
+    # ── Title row (dòng nhận diện khi in giấy) ──
+    ncols = 7  # STT, SKU, Tên SP, ĐVT, SL, SL bán, SL KM
+    title_text = f'{carrier} — {source_label}' if carrier and source_label else (carrier or source_label or 'Báo cáo gộp SKU')
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    c = ws.cell(row=1, column=1, value=title_text)
+    c.font = title_font
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 28  # đủ cao để hiển thị rõ
 
-    # ── Header ──
+    # ── Column headers (row 2) ──
+    headers = ["STT", "SKU", "Tên sản phẩm", "Đơn vị tính", "SL", "SL bán", "SL KM"]
+    # Độ rộng cột tối ưu: SKU=12, Tên SP=36 wrap, cột số=7 → tổng ~86 vừa A4 ngang
+    col_widths = [5, 12, 36, 12, 7, 7, 7]
+    col_aligns = ['C', 'C', 'L', 'C', 'R', 'R', 'R']  # center / left / right
+
     for ci, h in enumerate(headers, 1):
-        c = ws.cell(row=1, column=ci, value=h)
+        c = ws.cell(row=2, column=ci, value=h)
         c.font = hdr_font
         c.fill = hdr_fill
-        c.alignment = hdr_align
+        c.alignment = Alignment(horizontal='center', vertical='center')
         c.border = thin_border
 
-    # ── Data ──
+    # ── Data (bắt đầu từ row 3) ──
     for ri, r in enumerate(grouped_list):
-        rn = ri + 2
-        vals = [r["sku"], r.get("unit", ""), r["qty"], r["qty_sold"], r["promo_qty"]]
+        rn = ri + 3
+        vals = [ri + 1, r["sku"], r.get("product_name", ""), r.get("unit", ""), r["qty"], r["qty_sold"], r["promo_qty"]]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(row=rn, column=ci, value=v)
             c.font = data_font
             c.border = thin_border
+            # Căn lề theo cột + wrap text cho cột Tên sản phẩm (cột 3)
+            ha = col_aligns[ci - 1] if ci <= len(col_aligns) else 'L'
+            c.alignment = Alignment(horizontal={'C':'center','L':'left','R':'right'}.get(ha, 'left'),
+                                    vertical='center',
+                                    wrap_text=(ci == 3))
 
     # ── Total row ──
-    tr = len(grouped_list) + 2
+    tr = len(grouped_list) + 3
     tong_qty = sum(r["qty"] for r in grouped_list)
     tong_sold = sum(r["qty_sold"] for r in grouped_list)
     tong_promo = sum(r["promo_qty"] for r in grouped_list)
 
     ws.cell(row=tr, column=1, value="Tổng").font = total_font
     ws.cell(row=tr, column=1).border = thin_border
-    ws.cell(row=tr, column=2).border = thin_border  # Đơn vị tính trống
+    ws.cell(row=tr, column=2).border = thin_border  # SKU trống
+    ws.cell(row=tr, column=3).border = thin_border  # Tên sản phẩm trống
+    ws.cell(row=tr, column=4).border = thin_border  # Đơn vị tính trống
 
-    for ci, val in [(3, tong_qty), (4, tong_sold), (5, tong_promo)]:
+    for ci, val in [(5, tong_qty), (6, tong_sold), (7, tong_promo)]:
         c = ws.cell(row=tr, column=ci, value=val)
         c.font = total_font
         c.border = thin_border
@@ -428,6 +475,12 @@ def generate_grouped_excel(results: list[dict], output_path: str) -> str:
     # ── Column widths ──
     for ci, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── Print setup: vừa trang in, tránh mất cột ──
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # tự động số dòng
+    ws.page_setup.paperSize = 9  # A4
 
     wb.save(output_path)
     print(f"   📊 Đã tạo Excel gộp: {os.path.basename(output_path)}")
@@ -751,6 +804,7 @@ def process_single_pdf(
     prefix_map: dict[str, str],
     ambiguous_map: dict[str, list[str]],
     retail_lookup: dict[str, dict] | None = None,
+    carrier: str = '',
 ) -> dict | None:
     """
     Xu ly 1 file PDF: trich xuat -> doi chieu -> xuat file.
@@ -774,16 +828,36 @@ def process_single_pdf(
 
     # B3: Xuất file
     # B3: Xuất file — tên rõ ràng, phân biệt với PDF gốc
-    # Trích timestamp từ tên file nếu có (VD: PDF_goc_TTS_20260622_134530.pdf → 20260622_134530)
-    ts_match = re.search(r'(\d{8}_\d{6})', base_name)
-    ts = ts_match.group(1) if ts_match else base_name
+    # Tên file có gắn tên carrier để phân biệt khi có nhiều đơn vị vận chuyển
+    carrier_safe = carrier.replace(' ', '_').replace('&', 'n') if carrier else ''
 
-    excel_grouped_path = os.path.join(output_dir, f"Bao_cao_gop_SKU_{ts}.xlsx")
+    # Bỏ carrier prefix khỏi base_name nếu đã có (tránh lặp)
+    clean_name = base_name
+    if carrier_safe and base_name.startswith(carrier_safe + '_'):
+        clean_name = base_name[len(carrier_safe) + 1:]
+
+    # Trích timestamp: hỗ trợ cả định dạng TikTok (MM-DD_HH-MM-SS) và định dạng cũ (YYYYMMDD_HHMMSS)
+    ts_match = re.search(r'(\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{8}_\d{6})', clean_name)
+    ts = ts_match.group(1) if ts_match else clean_name
+
+    prefix = f"Bao_cao_gop_SKU_{carrier_safe}_" if carrier_safe else "Bao_cao_gop_SKU_"
+    excel_grouped_path = os.path.join(output_dir, f"{prefix}{ts}.xlsx")
+
+    # Tạo label nhận diện cho dòng tiêu đề trong Excel (hiển thị khi in giấy)
+    # clean_name VD: "06-30_14-11-10_Picking list_1"
+    # Chuyển thành: "Picking list 1 — 30/06 14:11"
+    label_match = re.search(r'(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})_(.+)', clean_name)
+    if label_match:
+        mm, dd, hh, mi, ss = label_match.group(1), label_match.group(2), label_match.group(3), label_match.group(4), label_match.group(5)
+        remainder = label_match.group(6).replace('_', ' ')
+        source_label = f'{remainder} — {dd}/{mm} {hh}:{mi}'
+    else:
+        source_label = clean_name.replace('_', ' ')
 
     # Chỉ xuất file Excel gộp theo SKU (không cột Seller SKU)
     # generate_pdf(results, pdf_out_path)
     # generate_grouped_pdf(results, pdf_grouped_path)
-    generate_grouped_excel(results, excel_grouped_path)
+    generate_grouped_excel(results, excel_grouped_path, carrier=carrier, source_label=source_label)
 
     return {
         "base_name": base_name,
@@ -806,6 +880,7 @@ def process_all(
     output_dir: str,
     master_path: str | None = None,
     retail_path: str | None = None,
+    carrier: str = '',
 ) -> list[dict]:
     """
     Xu ly toan bo pipeline cho nhieu file PDF.
@@ -814,8 +889,8 @@ def process_all(
     Args:
         pdf_files: danh sach duong dan file PDF
         output_dir: thu muc xuat ket qua
-        master_path: duong dan ma combosss.xlsx (combo)
-        retail_path: duong dan san pham ban le.xlsx (don le)
+        master_path: duong dan ma combo.xlsx (combo)
+        retail_path: duong dan sp ban le.xlsx (don le)
     """
     # Xac dinh master_path
     if master_path is None:
@@ -843,7 +918,7 @@ def process_all(
     all_results = []
     for pdf_path in pdf_files:
         result = process_single_pdf(pdf_path, output_dir,
-                                    master_data, master_skus, prefix_map, ambiguous_map, retail_lookup)
+                                    master_data, master_skus, prefix_map, ambiguous_map, retail_lookup, carrier)
         if result:
             all_results.append(result)
 

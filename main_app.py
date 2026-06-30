@@ -35,22 +35,26 @@ if getattr(sys, 'frozen', False):
     BILL_DIR = BASE_DIR / 'bill_calculate'
     UPLOAD_DIR = BILL_DIR / 'uploads'
     DEFAULT_COOKIE = Path(sys._MEIPASS) / 'seller-vn.tiktok.com_25-06-2026.json'
-    MASTER_DEFAULT = Path(sys._MEIPASS) / 'mã combosss.xlsx'
-    RETAIL_DEFAULT = Path(sys._MEIPASS) / 'sản phẩm bán lẻ.xlsx'
+    MASTER_DEFAULT = Path(sys._MEIPASS) / 'mã combo.xlsx'
+    RETAIL_DEFAULT = Path(sys._MEIPASS) / 'sp bán lẻ.xlsx'
 else:
     # Chạy source code
     _os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH',
         _os.path.join(_os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright'))
     DEFAULT_COOKIE = BASE_DIR / 'seller-vn.tiktok.com_25-06-2026.json'
-    MASTER_DEFAULT = BASE_DIR / 'mã combosss.xlsx'
-    RETAIL_DEFAULT = BASE_DIR / 'sản phẩm bán lẻ.xlsx'
+    MASTER_DEFAULT = BASE_DIR / 'mã combo.xlsx'
+    RETAIL_DEFAULT = BASE_DIR / 'sp bán lẻ.xlsx'
 
 TARGET_URL = 'https://seller-vn.tiktok.com'
 ORDERS_URL = 'https://seller-vn.tiktok.com/order?order_status%5B%5D=1&selected_sort=11&tab=to_ship&page_size=50'
 # URL filter theo đơn vị vận chuyển
 CARRIER_URLS = {
-    'J&T': ORDERS_URL + '&shipping_provider_id%5B%5D=6841743441349706241',
-    'GHN': ORDERS_URL + '&shipping_provider_id%5B%5D=7252807945006614278',
+    'J&T':           ORDERS_URL + '&shipping_provider_id%5B%5D=6841743441349706241',
+    'GHN':           ORDERS_URL + '&shipping_provider_id%5B%5D=7252807945006614278',
+    'VietNam Post':  ORDERS_URL + '&shipping_provider_id%5B%5D=7062208235196909313',
+    'Best Express':  ORDERS_URL + '&shipping_provider_id%5B%5D=7099655686241388293',
+    'Viettel Post':  ORDERS_URL + '&shipping_provider_id%5B%5D=7155825439565416197',
+    'J&T Cargo VN':  ORDERS_URL + '&shipping_provider_id%5B%5D=7581675938962736917',
 }
 BATCH_SIZE = 50
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -59,14 +63,15 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # AUTOMATION
 # ============================================================
 def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_cb, stop_event=None,
-                   existing_playwright=None, existing_browser=None, carrier=None):
-    """carrier: None (tất cả), 'J&T', hoặc 'GHN'"""
+                   existing_playwright=None, existing_browser=None, carrier=None, test_mode=False):
+    """carrier: None (tất cả), 'J&T', hoặc 'GHN'. test_mode=True → chỉ chọn đơn, không in."""
     with open(cookie_path, 'r', encoding='utf-8') as f:
         cd = json.load(f)
     cookies_list = cd.get('cookies', cd if isinstance(cd, list) else [])
     pdf_files = []
     total_printed = 0
     target = max_orders if max_orders > 0 else 10**9
+    use_select_all = (max_orders == 0)  # True = dùng nút "Chọn tất cả", False = tick từng đơn
     batch_num = 0
     carrier_label = f' [{carrier}]' if carrier else ''
     orders_url = CARRIER_URLS.get(carrier, ORDERS_URL)  # dùng URL filter nếu có carrier
@@ -130,23 +135,107 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             total_avail = page.evaluate("() => document.querySelectorAll('td.col-checkbox label.p-checkbox').length")
             if total_avail == 0:
                 log_cb('  ✓ Hết đơn khả dụng — hoàn thành.', 'ok'); break
-            to_select = min(batch_target, total_avail)
 
-            cbs = page.query_selector_all('td.col-checkbox label.p-checkbox')
-            checked = 0
-            for cb in cbs[:to_select]:
-                try: cb.click(); checked += 1; page.wait_for_timeout(120)
-                except: pass
-            page.wait_for_timeout(800)
+            if use_select_all:
+                # ── Chế độ "Chọn tất cả": click checkbox header → bấm nút "Chọn tất cả X đơn" ──
+                log_cb(f'  🖱 Đang chọn tất cả đơn hàng...', 'info')
 
-            # Nếu số đơn thực tế ít hơn batch_target → đây là batch cuối, in nốt rồi dừng
-            force_stop = total_avail < batch_target
+                # B1: Click checkbox trong header — TikTok dùng SVG icon .p-checkbox-mask-icon
+                header_clicked = False
+                # Thứ tự ưu tiên: SVG icon → parent .p-checkbox → input[type=checkbox] → JS fallback
+                for hdr_sel in [
+                    'th svg.p-checkbox-mask-icon',           # SVG icon TikTok
+                    'th .p-checkbox-mask-icon',               # class cha của SVG
+                    'th .p-checkbox',                         # container checkbox header
+                    'th.col-checkbox .p-checkbox',            # fallback cũ
+                    'th.col-checkbox label.p-checkbox',       # fallback cũ
+                    'th input[type="checkbox"]',               # input thật
+                ]:
+                    try:
+                        hdr = page.locator(hdr_sel).first
+                        if hdr.count() > 0 and hdr.is_visible(timeout=2000):
+                            hdr.click(); header_clicked = True
+                            log_cb(f'  ✓ Đã click checkbox header ({hdr_sel})', 'ok')
+                            break
+                    except: pass
 
-            if force_stop:
-                log_cb(f'  ⚠ Chỉ còn {total_avail} đơn — in nốt rồi dừng', 'warn')
+                if not header_clicked:
+                    # Fallback: JS click SVG icon hoặc container của nó
+                    header_clicked = page.evaluate('''() => {
+                        // Tìm SVG checkbox trong header
+                        const svg = document.querySelector('th svg.p-checkbox-mask-icon, th .p-checkbox-mask-icon svg, th svg[class*="checkbox"]');
+                        if (svg) {
+                            // Click vào phần tử cha (có thể là div/span chứa SVG)
+                            const parent = svg.closest('.p-checkbox') || svg.closest('label') || svg.closest('th');
+                            if (parent) { parent.click(); return true; }
+                            svg.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                            return true;
+                        }
+                        // Fallback cũ
+                        const cb = document.querySelector('th .p-checkbox, th.col-checkbox label, thead input[type="checkbox"]');
+                        if (cb) { cb.click(); return true; }
+                        return false;
+                    }''')
+                    if header_clicked:
+                        log_cb('  ✓ Đã click checkbox header (JS fallback)', 'ok')
+
+                page.wait_for_timeout(2500)
+
+                # B2: Tìm và click nút "Chọn tất cả X đơn hàng" — TikTok dùng <span>
+                select_all_btn = None
+                for sel_text in ['Chọn tất cả', 'Select all', 'Chọn tất', 'Select All']:
+                    for tag in ['span', 'button', 'div']:
+                        try:
+                            btns = page.locator(f'{tag}:has-text("{sel_text}")')
+                            cnt = btns.count()
+                            for j in range(cnt):
+                                b = btns.nth(j)
+                                if b.is_visible(timeout=800):
+                                    btn_text = b.inner_text().strip()[:80]
+                                    select_all_btn = b
+                                    break
+                        except: pass
+                        if select_all_btn: break
+                    if select_all_btn: break
+
+                if select_all_btn:
+                    select_all_btn.click(timeout=5000)
+                    log_cb(f'  ✅ Đã bấm "Chọn tất cả"', 'ok')
+                    page.wait_for_timeout(2000)
+                    checked = page.evaluate("() => document.querySelectorAll('input[type=\"checkbox\"]:checked').length")
+                    log_cb(f'  ✓ Đã chọn {checked} đơn hàng', 'ok')
+                else:
+                    # Fallback: tick từng đơn như cũ
+                    log_cb('  ⚠ Không tìm thấy nút "Chọn tất cả" — fallback tick tay', 'warn')
+                    to_select = min(batch_target, total_avail)
+                    cbs = page.query_selector_all('td.col-checkbox label.p-checkbox')
+                    checked = 0
+                    for cb in cbs[:to_select]:
+                        try: cb.click(); checked += 1; page.wait_for_timeout(120)
+                        except: pass
+                    page.wait_for_timeout(800)
+                    log_cb(f'  ✓ Đã tick {checked}/{to_select} đơn (fallback)', 'ok')
+
+                # Chọn tất cả → 1 lần duy nhất, force_stop sau khi in
+                force_stop = True
+                batch_target = 10**9  # vô hiệu hóa giới hạn batch
             else:
+                # ── Chế độ tick từng đơn (có số lượng cụ thể) ──
+                to_select = min(batch_target, total_avail)
+
+                cbs = page.query_selector_all('td.col-checkbox label.p-checkbox')
+                checked = 0
+                for cb in cbs[:to_select]:
+                    try: cb.click(); checked += 1; page.wait_for_timeout(120)
+                    except: pass
+                page.wait_for_timeout(800)
+
+                # Nếu số đơn thực tế ít hơn batch_target → đây là batch cuối, in nốt rồi dừng
+                force_stop = total_avail < batch_target
                 log_cb(f'  ✓ Đã chọn {checked}/{batch_target} đơn', 'ok')
-            if checked == 0: log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
+
+            if checked == 0:
+                log_cb('  ✓ Hết đơn — hoàn thành.', 'ok'); break
 
             # ── Lưu ID các đơn hàng đã chọn vào Excel (phòng trường hợp tải lỗi) ──
             try:
@@ -187,6 +276,18 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
                     log_cb(f'  📋 Đã lưu {len(order_ids)} ID đơn hàng vào {Path(order_file).name}', 'ok')
             except Exception as e:
                 log_cb(f'  ⚠ Không lưu được ID đơn hàng: {e}', 'warn')
+
+            # ── TEST MODE: dừng sau khi chọn đơn, không in ──
+            if test_mode:
+                log_cb('  🧪 TEST MODE: Dừng tại bước chọn đơn — không in.', 'warn')
+                try:
+                    ss = str(Path(output_dir) / f'test_mode_batch{batch_num}.png')
+                    page.screenshot(path=ss)
+                    log_cb(f'  📸 Screenshot: {ss}', 'info')
+                except: pass
+                total_printed += checked
+                log_cb(f'  📊 Đã chọn {checked} đơn (test mode — không in)', 'info')
+                break
 
             # Click nút "Sắp xếp vận chuyển và in"
             state_cb('printing', f'Batch {batch_num}: Đang in...')
@@ -309,10 +410,9 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
             # Dùng event listener để bắt TẤT CẢ download (nhiều file 1 lúc)
             downloaded_files = []
             def on_download(dl):
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                carrier_prefix = carrier.replace('&', '') + '_' if carrier else ''
-                base_name = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{ts}.pdf'
-                # Luôn thêm carrier prefix vào đầu tên file để phân biệt J&T / GHN
+                carrier_prefix = carrier.replace(' ', '_').replace('&', 'n') + '_' if carrier else ''
+                base_name = dl.suggested_filename or f'PDF_goc_TTS_batch{batch_num}_{len(downloaded_files)}_{datetime.now().strftime("%m-%d_%H-%M-%S")}.pdf'
+                # File TikTok đã có sẵn ngày giờ, chỉ cần thêm tên hãng vào đầu
                 suggested = carrier_prefix + base_name if carrier else base_name
                 bp = str(Path(output_dir) / suggested)
                 dl.save_as(bp)
@@ -350,7 +450,7 @@ def run_automation(cookie_path, doc_type, output_dir, max_orders, log_cb, state_
 # ============================================================
 # CALCULATOR
 # ============================================================
-def run_calculator(pdf_paths, output_dir, master_path, retail_path, log_cb):
+def run_calculator(pdf_paths, output_dir, master_path, retail_path, log_cb, carrier=''):
     if process_all is None:
         log_cb('✗ Calculator không khả dụng (thiếu module calculator)', 'err'); return []
     if not Path(master_path).exists(): log_cb(f'✗ Không tìm thấy master_data: {master_path}', 'err'); return []
@@ -358,7 +458,7 @@ def run_calculator(pdf_paths, output_dir, master_path, retail_path, log_cb):
     for p in pdf_paths:
         shutil.copy2(p, str(UPLOAD_DIR / Path(p).name))
     try:
-        results = process_all(pdf_paths, out_dir, master_path, retail_path)
+        results = process_all(pdf_paths, out_dir, master_path, retail_path, carrier)
         for r in results:
             log_cb(f'  ✓ {r["rows"]} dòng | Qty={r["tong_qty"]} | Sold={r["tong_sold"]} | Promo={r["tong_promo"]}', 'ok')
             for key, fb in r['files'].items():
@@ -501,14 +601,14 @@ class AutomationWorker:
 class App:
     def __init__(self, root):
         self.root = root; self.root.title('📦 TTS Bill — In & Tính Bill TikTok Seller')
-        self.root.geometry('680x820'); self.root.minsize(580, 700)
+        self.root.geometry('680x720'); self.root.minsize(520, 560)
         self.root.configure(bg='#f0f2f5')
 
         # Hiển thị tên file gọn gàng, không hiện đường dẫn _MEI* dài dòng
         self._cookie_real = str(DEFAULT_COOKIE) if DEFAULT_COOKIE.exists() else ''
         self._master_real = str(MASTER_DEFAULT) if MASTER_DEFAULT.exists() else ''
         # Retail: ưu tiên file cạnh exe (nếu có), fallback file nhúng
-        local_retail = BASE_DIR / 'sản phẩm bán lẻ.xlsx'
+        local_retail = BASE_DIR / 'sp bán lẻ.xlsx'
         if local_retail.exists():
             self._retail_real = str(local_retail)
         elif RETAIL_DEFAULT.exists():
@@ -531,9 +631,16 @@ class App:
         self.doc_type = tk.StringVar(value='a4')
         self.jt_orders = tk.IntVar(value=0)     # số đơn J&T Express
         self.ghn_orders = tk.IntVar(value=0)    # số đơn GHN
+        self.vnp_orders = tk.IntVar(value=0)    # số đơn VietNam Post
+        self.best_orders = tk.IntVar(value=0)   # số đơn Best Express
+        self.viettel_orders = tk.IntVar(value=0)   # số đơn Viettel Post
+        self.jtc_orders = tk.IntVar(value=0)    # số đơn J&T Cargo VN
         self.auto_print = tk.BooleanVar(value=False)  # tự động in PDF sau khi tải
-        self.printer_name = tk.StringVar(value='HP LaserJet Pro 4001 4002 4003 4004 PCL-6 (V4)')
-        self.pdf_print_settings = tk.StringVar(value='paper=A4,duplex=simplex')  # cài đặt in cho PDF (SumatraPDF)
+        self.test_mode = tk.BooleanVar(value=True)   # chế độ test: chỉ chọn đơn, không in (mặc định ON)
+        self.printer_name = tk.StringVar(value='')  # sẽ tự động chọn máy in đầu tiên
+        self.paper_size = tk.StringVar(value='A4')
+        self.duplex_mode = tk.StringVar(value='simplex')
+        self.pages_per_sheet = tk.StringVar(value='1')
         self.output_dir = tk.StringVar(value=str(BASE_DIR / 'outputs'))
         self.schedule_mode = tk.StringVar(value='once')
         self.interval_hours = tk.IntVar(value=1)
@@ -560,10 +667,10 @@ class App:
     # ═══════════════════════════════════════════════════
     # UI BUILDERS
     # ═══════════════════════════════════════════════════
-    def _s(self, title, builder):
-        f = tk.LabelFrame(self.root, text=title, bg='#f0f2f5', fg='#374151',
-                          font=('Segoe UI', 10, 'bold'), padx=12, pady=8, bd=0, highlightthickness=1, highlightbackground='#e5e7eb')
-        f.pack(fill='x', padx=14, pady=(0,5)); builder(f)
+    def _s(self, parent, title, builder):
+        f = tk.LabelFrame(parent, text=title, bg='#f0f2f5', fg='#374151',
+                          font=('Segoe UI', 10, 'bold'), padx=10, pady=6, bd=0, highlightthickness=1, highlightbackground='#e5e7eb')
+        f.pack(fill='x', padx=0, pady=(0,3)); builder(f)
 
     def _row(self, parent, label, var, cmd, status_lbl_key):
         r = tk.Frame(parent, bg='#f0f2f5'); r.pack(fill='x')
@@ -577,41 +684,57 @@ class App:
 
     def _build_ui(self):
         # Header
-        h = tk.Frame(self.root, bg='#2563eb', height=56)
+        h = tk.Frame(self.root, bg='#2563eb', height=48)
         h.pack(fill='x'); h.pack_propagate(False)
-        tk.Label(h, text='📦 TTS Bill', font=('Segoe UI',16,'bold'), bg='#2563eb', fg='white').pack(side='left', padx=16, pady=12)
-        tk.Label(h, text='In & Tính Bill TikTok Seller', font=('Segoe UI',9), bg='#2563eb', fg='#bfdbfe').pack(side='left', pady=16)
+        tk.Label(h, text='📦 TTS Bill', font=('Segoe UI',14,'bold'), bg='#2563eb', fg='white').pack(side='left', padx=14, pady=10)
+        tk.Label(h, text='In & Tính Bill TikTok Seller', font=('Segoe UI',8), bg='#2563eb', fg='#bfdbfe').pack(side='left', pady=12)
 
-        # Config sections
-        self._s('Cấu hình', self._build_config)
-        self._s('⚙ Tùy chọn in', self._build_options)
-        self._s('🕐 Hẹn giờ', self._build_schedule)
+        # ── Scrollable settings area ──
+        canvas = tk.Canvas(self.root, bg='#f0f2f5', highlightthickness=0, height=340)
+        scrollbar = tk.Scrollbar(self.root, orient='vertical', command=canvas.yview)
+        self._settings_frame = tk.Frame(canvas, bg='#f0f2f5')
+        self._settings_frame.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=self._settings_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(fill='x', padx=(14, 0), pady=(4, 0))
+        scrollbar.pack(side='right', fill='y', padx=(0, 14), pady=(4, 0))
+        # Bind mousewheel to scroll
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        canvas.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', _on_mousewheel))
+        canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
+
+        # Build sections inside scrollable frame
+        self._s(self._settings_frame, 'Cấu hình', self._build_config)
+        self._s(self._settings_frame, '⚙ Tùy chọn in', self._build_options)
+        self._s(self._settings_frame, '🕐 Hẹn giờ', self._build_schedule)
 
         # Buttons
-        btn = tk.Frame(self.root, bg='#f0f2f5'); btn.pack(fill='x', padx=14, pady=(8,0))
+        btn = tk.Frame(self._settings_frame, bg='#f0f2f5'); btn.pack(fill='x', padx=0, pady=(6, 4))
         self.start_btn = tk.Button(btn, text='▶ CHẠY NGAY', command=self._start_once,
-            font=('Segoe UI',11,'bold'), bg='#2563eb', fg='white', relief='flat', cursor='hand2', padx=16, pady=8,
+            font=('Segoe UI',10,'bold'), bg='#2563eb', fg='white', relief='flat', cursor='hand2', padx=12, pady=6,
             activebackground='#1d4ed8', activeforeground='white')
-        self.start_btn.pack(side='left', fill='x', expand=True, padx=(0,3))
+        self.start_btn.pack(side='left', fill='x', expand=True, padx=(0, 2))
         self.sched_btn = tk.Button(btn, text='⏰ CHẠY LỊCH', command=self._start_schedule,
-            font=('Segoe UI',11,'bold'), bg='#059669', fg='white', relief='flat', cursor='hand2', padx=16, pady=8,
+            font=('Segoe UI',10,'bold'), bg='#059669', fg='white', relief='flat', cursor='hand2', padx=12, pady=6,
             activebackground='#047857', activeforeground='white')
-        self.sched_btn.pack(side='left', fill='x', expand=True, padx=(3,3))
+        self.sched_btn.pack(side='left', fill='x', expand=True, padx=(2, 2))
         self.stop_btn = tk.Button(btn, text='⏹ DỪNG', command=self._stop_all,
-            font=('Segoe UI',11,'bold'), bg='#e5e7eb', fg='#6b7280', relief='flat', cursor='hand2', padx=16, pady=8,
+            font=('Segoe UI',10,'bold'), bg='#e5e7eb', fg='#6b7280', relief='flat', cursor='hand2', padx=12, pady=6,
             state='disabled', activebackground='#d1d5db')
-        self.stop_btn.pack(side='left', fill='x', expand=True, padx=(3,0))
+        self.stop_btn.pack(side='left', fill='x', expand=True, padx=(2, 0))
 
         # Status bar
-        sf = tk.Frame(self.root, bg='#f0f2f5'); sf.pack(fill='x', padx=14, pady=(6,0))
+        sf = tk.Frame(self.root, bg='#f0f2f5'); sf.pack(fill='x', padx=14, pady=(4, 0))
         self.status_bar = tk.Label(sf, text='🟢 Sẵn sàng', font=('Segoe UI',9,'bold'),
                                    bg='#f0f2f5', fg='#059669', anchor='w')
         self.status_bar.pack(fill='x')
 
-        # LOG — phần chính
+        # LOG — fills remaining space
         self._build_log()
 
-        # Results
+        # Results — compact at bottom
         self._build_results()
 
     def _build_config(self, parent):
@@ -632,17 +755,64 @@ class App:
         tk.Label(r2, text='GHN:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
         tk.Spinbox(r2, from_=0, to=9999, width=6, textvariable=self.ghn_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
         tk.Label(r2, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 3: Số đơn VietNam Post
+        r3 = tk.Frame(parent, bg='#f0f2f5'); r3.pack(fill='x', pady=(2,0))
+        tk.Label(r3, text='VietNam Post:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r3, from_=0, to=9999, width=6, textvariable=self.vnp_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r3, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 4: Số đơn Best Express
+        r4 = tk.Frame(parent, bg='#f0f2f5'); r4.pack(fill='x', pady=(2,0))
+        tk.Label(r4, text='Best Express:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r4, from_=0, to=9999, width=6, textvariable=self.best_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r4, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 5: Số đơn Viettel Post
+        r5 = tk.Frame(parent, bg='#f0f2f5'); r5.pack(fill='x', pady=(2,0))
+        tk.Label(r5, text='Viettel Post:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r5, from_=0, to=9999, width=6, textvariable=self.viettel_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r5, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
+        # Dòng 6: Số đơn J&T Cargo VN
+        r6 = tk.Frame(parent, bg='#f0f2f5'); r6.pack(fill='x', pady=(2,0))
+        tk.Label(r6, text='J&T Cargo VN:', font=('Segoe UI',9), bg='#f0f2f5', fg='#6b7280', width=12, anchor='w').pack(side='left')
+        tk.Spinbox(r6, from_=0, to=9999, width=6, textvariable=self.jtc_orders, font=('Segoe UI',9)).pack(side='left', padx=(0,0))
+        tk.Label(r6, text='đơn  (0 = bỏ qua)', font=('Segoe UI',8), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=6)
         tk.Label(parent, text='📑 Luôn in: Danh sách lấy hàng (A4) + Đơn vận chuyển (A6)',
                  font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(anchor='w', pady=(4,0))
         # In tự động
         r3 = tk.Frame(parent, bg='#f0f2f5'); r3.pack(fill='x', pady=(4,0))
         tk.Checkbutton(r3, text='🖨️ In tự động ra máy in', variable=self.auto_print,
                        bg='#f0f2f5', font=('Segoe UI',9), activebackground='#f0f2f5').pack(side='left')
-        tk.Entry(r3, textvariable=self.printer_name, font=('Segoe UI',8), width=30).pack(side='left', padx=(6,0))
-        r4 = tk.Frame(parent, bg='#f0f2f5'); r4.pack(fill='x')
-        tk.Label(r4, text='   Cài đặt in PDF:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
-        tk.Entry(r4, textvariable=self.pdf_print_settings, font=('Segoe UI',8), width=35).pack(side='left', padx=(4,0))
-        tk.Label(r4, text='(vd: paper=Letter,duplex=simplex)', font=('Segoe UI',7), bg='#f0f2f5', fg='#9ca3af').pack(side='left', padx=4)
+        # Combobox chọn máy in (tự động lấy danh sách)
+        printers = self._get_printers()
+        self.printer_combo = ttk.Combobox(r3, textvariable=self.printer_name, values=printers,
+                                          font=('Segoe UI',8), width=35, state='readonly')
+        self.printer_combo.pack(side='left', padx=(6, 0))
+        if printers:
+            self.printer_combo.current(0)  # chọn máy in đầu tiên
+        # Nút refresh danh sách máy in
+        tk.Button(r3, text='🔄', command=self._refresh_printers, font=('Segoe UI',7),
+                  relief='flat', bg='#e5e7eb', cursor='hand2', width=3).pack(side='left', padx=(4, 0))
+        r4 = tk.Frame(parent, bg='#f0f2f5'); r4.pack(fill='x', pady=(2, 0))
+        tk.Label(r4, text='   Khổ giấy:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
+        self.paper_combo = ttk.Combobox(r4, textvariable=self.paper_size,
+                                         values=['A4', 'A3', 'Letter', 'Legal'],
+                                         font=('Segoe UI',8), width=8, state='readonly')
+        self.paper_combo.pack(side='left', padx=(2, 6))
+        tk.Label(r4, text='In mặt:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
+        self.duplex_combo = ttk.Combobox(r4, textvariable=self.duplex_mode,
+                                          values=['simplex', 'longedge', 'shortedge'],
+                                          font=('Segoe UI',8), width=10, state='readonly')
+        self.duplex_combo.pack(side='left', padx=(2, 6))
+        tk.Label(r4, text='Trang/tờ:', font=('Segoe UI',8), bg='#f0f2f5', fg='#6b7280').pack(side='left')
+        self.pages_combo = ttk.Combobox(r4, textvariable=self.pages_per_sheet,
+                                         values=['1', '2', '4', '6', '9'],
+                                         font=('Segoe UI',8), width=4, state='readonly')
+        self.pages_combo.pack(side='left', padx=(2, 6))
+        # Bind: khi đổi máy in → tự động cập nhật khổ giấy hỗ trợ
+        self.printer_combo.bind('<<ComboboxSelected>>', lambda e: self._on_printer_changed())
+        # Test mode
+        r_test = tk.Frame(parent, bg='#f0f2f5'); r_test.pack(fill='x', pady=(2,0))
+        tk.Checkbutton(r_test, text='🧪 Test mode (chỉ chọn đơn, không in)', variable=self.test_mode,
+                       bg='#f0f2f5', font=('Segoe UI',9), fg='#d97706', activebackground='#f0f2f5').pack(side='left')
 
     def _build_schedule(self, parent):
         modes = [('Chạy 1 lần','once'), ('Lặp mỗi N giờ','interval'), ('Giờ cố định trong ngày','daily')]
@@ -811,22 +981,29 @@ class App:
     def _execute_job(self, playwright=None, browser=None, job_stop=None):
         """Thực thi 1 job automation + calculator. Được gọi từ AutomationWorker thread."""
         try:
-            cookie = self._cookie_real; out_dir = self.output_dir.get()
+            cookie = self._cookie_real; base_dir = self.output_dir.get()
             master = self._master_real; retail = self._retail_real
             doc = self.doc_type.get()
+            # Tự động tạo thư mục con theo ngày để gọn gàng từng ngày
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            out_dir = str(Path(base_dir) / today_str)
             os.makedirs(out_dir, exist_ok=True)
 
-            # Xác định danh sách carrier cần xử lý (J&T trước, GHN sau)
-            carriers_to_process = []
-            jt = self.jt_orders.get()
-            ghn = self.ghn_orders.get()
-            if jt != 0:
-                carriers_to_process.append(('J&T', jt if jt > 0 else 0))
-            if ghn != 0:
-                carriers_to_process.append(('GHN', ghn if ghn > 0 else 0))
-            # Nếu cả 2 đều = 0 → chạy không lọc (giữ nguyên hành vi cũ)
-            if not carriers_to_process:
-                carriers_to_process.append((None, 0))
+            # Xác định danh sách carrier cần xử lý
+            all_carriers = [
+                ('J&T',           self.jt_orders.get()),
+                ('GHN',           self.ghn_orders.get()),
+                ('VietNam Post',  self.vnp_orders.get()),
+                ('Best Express',  self.best_orders.get()),
+                ('Viettel Post',  self.viettel_orders.get()),
+                ('J&T Cargo VN',  self.jtc_orders.get()),
+            ]
+
+            # Nếu tất cả đều = 0 → chạy tất cả carrier, mỗi carrier in tất cả đơn
+            if all(v == 0 for _, v in all_carriers):
+                carriers_to_process = [(name, 0) for name, _ in all_carriers]
+            else:
+                carriers_to_process = [(name, v) for name, v in all_carriers if v != 0]
 
             all_pdf_paths = []
             all_results = []  # gom kết quả calculator từ tất cả carrier
@@ -843,7 +1020,7 @@ class App:
                     lambda s, m: self.root.after(0, self._set_state, s, m),
                     stop_signal,
                     existing_playwright=playwright, existing_browser=browser,
-                    carrier=carrier)
+                    carrier=carrier, test_mode=self.test_mode.get())
 
                 # Giữ browser cho carrier tiếp theo
                 if pw: playwright = pw
@@ -858,7 +1035,8 @@ class App:
                 if pdf_paths:
                     self.log(f'📊 Đang tính bill [{carrier_display}]...', 'info')
                     carrier_results = run_calculator(pdf_paths, out_dir, master, retail,
-                        lambda m, t='': self.root.after(0, self.log, m, t))
+                        lambda m, t='': self.root.after(0, self.log, m, t),
+                        carrier=carrier)
                     for r in carrier_results:
                         for key, lbl in [('excel','📊'),('pdf','📕'),('pdf_grouped','📋')]:
                             fp = r['files'].get(key)
@@ -869,31 +1047,52 @@ class App:
             if self.auto_print.get():
                 printer = self.printer_name.get().strip()
                 self.log(f'🖨️ Đang in ra "{printer}"...', 'info')
-                # Thu thập các file cần in từ lần chạy này
-                files_to_print = []
-                # File PDF Shipping Label (từ TikTok)
+
+                # Gom file theo timestamp để in xen kẽ: shipping label → Excel
+                # Timestamp format trong tên file: MM-DD_HH-MM-SS
+                import re as _re
+                groups = {}  # {ts: {'shipping': [paths], 'excel': [paths]}}
+
                 for p in all_pdf_paths:
-                    name = Path(p).name.lower()
-                    if Path(p).exists() and ('shipping' in name or 'vận chuyển' in name):
-                        files_to_print.append(str(p))
-                # File Excel báo cáo gộp SKU (từ calculator)
+                    name = Path(p).name
+                    if not (Path(p).exists() and ('shipping' in name.lower() or 'vận chuyển' in name.lower())):
+                        continue
+                    m = _re.search(r'(\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', name)
+                    ts = m.group(1) if m else '0'
+                    groups.setdefault(ts, {'shipping': [], 'excel': []})['shipping'].append(str(p))
+
                 for r in all_results:
                     excel_path = r['files'].get('excel')
-                    if excel_path and Path(excel_path).exists():
-                        files_to_print.append(excel_path)
-                # In từng file
-                pdf_settings = self.pdf_print_settings.get().strip()
-                for fp in files_to_print:
-                    try:
-                        is_pdf = fp.lower().endswith('.pdf')
-                        # PDF: dùng SumatraPDF với cài đặt tùy chỉnh
-                        # Excel: dùng PowerShell với máy in mặc định
-                        self._print_file(fp, printer,
-                                       pdf_settings=pdf_settings if is_pdf else '')
-                        self.log(f'  ✓ Đã gửi in: {Path(fp).name}', 'ok')
-                    except Exception as e:
-                        self.log(f'  ✗ Lỗi in {Path(fp).name}: {e}', 'err')
-                if not files_to_print:
+                    if not (excel_path and Path(excel_path).exists()):
+                        continue
+                    name = Path(excel_path).name
+                    m = _re.search(r'(\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', name)
+                    ts = m.group(1) if m else '0'
+                    groups.setdefault(ts, {'shipping': [], 'excel': []})['excel'].append(excel_path)
+
+                # In theo thứ tự: shipping label 1 → Excel 1 → shipping label 2 → Excel 2 ...
+                label_settings = f'paper={self.paper_size.get()},duplex=simplex'
+                printed = 0
+                for ts in sorted(groups.keys()):
+                    g = groups[ts]
+                    # In shipping label trước
+                    for fp in g['shipping']:
+                        try:
+                            self._print_file(fp, printer, pdf_settings=label_settings)
+                            self.log(f'  ✓ Đã gửi in: {Path(fp).name}', 'ok')
+                            printed += 1
+                        except Exception as e:
+                            self.log(f'  ✗ Lỗi in {Path(fp).name}: {e}', 'err')
+                    # In Excel báo cáo gộp SKU ngay sau shipping label cùng batch
+                    for fp in g['excel']:
+                        try:
+                            self._print_file(fp, printer, pdf_settings='')
+                            self.log(f'  ✓ Đã gửi in: {Path(fp).name}', 'ok')
+                            printed += 1
+                        except Exception as e:
+                            self.log(f'  ✗ Lỗi in {Path(fp).name}: {e}', 'err')
+
+                if printed == 0:
                     self.log('  ⚠ Không có file nào để in', 'warn')
 
             self.log('🏁 HOÀN THÀNH!', 'bold_ok')
@@ -935,8 +1134,10 @@ class App:
             if Path(fp).exists(): os.startfile(fp)
 
     def _open_output_dir(self):
-        d = self.output_dir.get()
-        if Path(d).exists(): os.startfile(d)
+        base = self.output_dir.get()
+        d = Path(base) / datetime.now().strftime('%Y-%m-%d')
+        if d.exists(): os.startfile(str(d))
+        elif Path(base).exists(): os.startfile(base)
 
     def _print_file(self, file_path, printer_name, pdf_settings='paper=A4'):
         """In file (PDF hoặc Excel) ra máy in chỉ định (Windows).
@@ -1056,6 +1257,112 @@ class App:
             return temp_path
         except Exception:
             return None
+
+    def _get_printers(self) -> list[str]:
+        """Trả về danh sách máy in đang có trên hệ thống (Windows)."""
+        printers = []
+        # Cách 1: win32print (nếu có)
+        try:
+            import win32print
+            for info in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS, None, 1):
+                name = info[2].strip() if info[2] else ''
+                if name:
+                    printers.append(name)
+        except Exception:
+            pass
+
+        # Cách 2: PowerShell fallback
+        if not printers:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['powershell', '-Command',
+                     "Get-Printer | Select-Object -ExpandProperty Name | Where-Object { $_ -notlike '*Microsoft*' -and $_ -notlike '*Fax*' -and $_ -notlike '*OneNote*' -and $_ -notlike '*XPS*' }"],
+                    capture_output=True, text=True, timeout=10)
+                for line in result.stdout.strip().split('\n'):
+                    name = line.strip()
+                    if name and name not in printers:
+                        printers.append(name)
+            except Exception:
+                pass
+
+        return printers
+
+    def _refresh_printers(self):
+        """Làm mới danh sách máy in trong combobox."""
+        printers = self._get_printers()
+        self.printer_combo['values'] = printers
+        if printers:
+            self.printer_combo.current(0)
+            self.printer_name.set(printers[0])
+        self._on_printer_changed()
+
+    def _on_printer_changed(self):
+        """Khi đổi máy in → cập nhật danh sách khổ giấy được hỗ trợ."""
+        printer = self.printer_name.get()
+        if not printer:
+            return
+        papers = self._get_printer_papers(printer)
+        if papers:
+            self.paper_combo['values'] = papers
+            # Giữ A4 nếu có, nếu không thì chọn cái đầu
+            if 'A4' in papers:
+                self.paper_size.set('A4')
+            else:
+                self.paper_size.set(papers[0])
+
+    def _get_printer_papers(self, printer_name: str) -> list[str]:
+        """Lấy danh sách khổ giấy được hỗ trợ bởi máy in (Windows)."""
+        papers = []
+        # Dùng win32print
+        try:
+            import win32print, win32con
+            hprinter = win32print.OpenPrinter(printer_name)
+            try:
+                # DC_PAPERS = 2, DC_PAPERNAMES = 16
+                paper_ids = win32print.DeviceCapabilities(printer_name, None, 2)
+                paper_names = win32print.DeviceCapabilities(printer_name, None, 16)
+                if paper_names and paper_ids:
+                    # paper_names là tuple các tên, paper_ids là tuple các ID
+                    seen = set()
+                    for i, pid in enumerate(paper_ids):
+                        if i < len(paper_names) and paper_names[i]:
+                            name = paper_names[i].strip()
+                            if name and name not in seen:
+                                papers.append(name)
+                                seen.add(name)
+            finally:
+                win32print.ClosePrinter(hprinter)
+        except Exception:
+            pass
+
+        # Fallback: PowerShell
+        if not papers:
+            try:
+                import subprocess
+                ps = f'''Get-PrinterProperty -PrinterName "{printer_name}" | Select-Object -ExpandProperty PaperSizes 2>$null'''
+                result = subprocess.run(['powershell', '-Command', ps],
+                                        capture_output=True, text=True, timeout=10)
+                for line in result.stdout.strip().split('\n'):
+                    name = line.strip()
+                    if name:
+                        papers.append(name)
+            except Exception:
+                pass
+
+        # Fallback mặc định
+        if not papers:
+            papers = ['A4', 'A3', 'Letter', 'Legal']
+        return papers
+
+    def _build_pdf_settings(self) -> str:
+        """Dựng chuỗi cài đặt SumatraPDF từ các combobox."""
+        parts = [f'paper={self.paper_size.get()}',
+                 f'duplex={self.duplex_mode.get()}']
+        pages = self.pages_per_sheet.get()
+        if pages != '1':
+            parts.append(f'pagespersheet={pages}')
+        return ','.join(parts)
 
     def _warn_sumatra(self):
         """Cảnh báo 1 lần nếu chưa cài SumatraPDF."""
